@@ -170,14 +170,14 @@ function stubFullApi(options: FullApiOptions = {}) {
   return fetchMock;
 }
 
-async function renderReadyApp() {
-  render(<App />);
+async function renderReadyApp(props?: { activationTimeoutMs?: number }) {
+  render(<App {...props} />);
   // Never click Capture while it is still disabled during backend load.
   await screen.findByText('Backend: online');
 }
 
-async function driveToReady() {
-  await renderReadyApp();
+async function driveToReady(props?: { activationTimeoutMs?: number }) {
+  await renderReadyApp(props);
   fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
   await screen.findByText(TRANSCRIPT_QUESTION);
   fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
@@ -471,5 +471,57 @@ describe('activation lifecycle', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/stop', expect.anything());
     expect(screen.getByText('State: Ready for review')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeDisabled();
+  });
+
+  it('stops speech when approval is revoked while speaking', async () => {
+    const fetchMock = stubFullApi();
+    await driveToSpeaking();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    await screen.findByText('State: Ready for review');
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/stop', expect.anything());
+    expect(screen.getByRole('checkbox', { name: /I reviewed this answer/ })).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeDisabled();
+  });
+
+  it('keeps approval when stopping fails during revocation', async () => {
+    stubFullApi({
+      stop: () => Promise.reject(new Error('stop unreachable')),
+    });
+    await driveToSpeaking();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('stop unreachable');
+    expect(screen.getByText('State: Speaking')).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /I reviewed this answer/ })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Interrupt' })).toBeEnabled();
+  });
+
+  it('never starts speech late after an activation timeout', async () => {
+    stubFullApi();
+    await driveToReady({ activationTimeoutMs: 20 });
+    // Install the slow speak response only now so the 40ms delay starts at
+    // activation time, after the 20ms timeout is already armed.
+    const fetchMock = stubFullApi({
+      speakGate: new Promise<Response>((resolve) => {
+        setTimeout(() => {
+          resolve(
+            jsonResponse({
+              status: 'speaking',
+              answer_id: 'ans-1',
+              voice: 'forrest-synthetic-v1',
+            }),
+          );
+        }, 40);
+      }),
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Speech activation timed out.');
+    expect(screen.getByText('State: Ready for review')).toBeInTheDocument();
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([url]) => url === '/api/stop')).toHaveLength(2);
+    });
+    expect(screen.queryByText('State: Speaking')).not.toBeInTheDocument();
   });
 });

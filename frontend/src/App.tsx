@@ -14,7 +14,11 @@ type BackendStatus = 'checking' | 'online' | 'offline';
 
 const BUSY_PHASES = ['transcribing', 'retrieving', 'verifying'];
 
-export default function App() {
+interface AppProps {
+  activationTimeoutMs?: number;
+}
+
+export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: AppProps = {}) {
   const [session, dispatch] = useReducer(sessionReducer, initialSession);
   const [sources, setSources] = useState<Source[]>([]);
   const [approved, setApproved] = useState<Record<string, boolean>>({});
@@ -58,31 +62,54 @@ export default function App() {
   // task must never strand backend speech without an interruption control.
   const speechActive = session.phase === 'speaking' || session.phase === 'activating';
 
+  // Stop backend speech when it may be active. Returns false when the stop
+  // failed (session keeps a retryable control) or was superseded, in which
+  // case the caller must not proceed with its own transition.
+  const stopIfSpeechActive = useCallback(async (): Promise<boolean> => {
+    if (session.phase !== 'speaking' && session.phase !== 'activating') {
+      return true;
+    }
+    const ticket = ++ticketRef.current;
+    try {
+      await api.stop();
+    } catch (error) {
+      if (ticket !== ticketRef.current) {
+        return false;
+      }
+      dispatch({ type: 'stop:failed', error: errorMessage(error) });
+      return false;
+    }
+    if (ticket !== ticketRef.current) {
+      return false;
+    }
+    return true;
+  }, [session.phase]);
+
   const toggleSource = useCallback(
     async (id: string) => {
-      const needsStop = session.phase === 'speaking' || session.phase === 'activating';
-      const ticket = ++ticketRef.current;
-      if (needsStop) {
-        // Never strand backend speech behind a revoked approval: stop first,
-        // and abort the toggle entirely when the stop fails.
-        try {
-          await api.stop();
-        } catch (error) {
-          if (ticket !== ticketRef.current) {
-            return;
-          }
-          dispatch({ type: 'stop:failed', error: errorMessage(error) });
-          return;
-        }
-        if (ticket !== ticketRef.current) {
-          return;
-        }
+      // Never strand backend speech behind a revoked approval: stop first,
+      // and abort the toggle entirely when the stop fails.
+      if (!(await stopIfSpeechActive())) {
+        return;
       }
+      ticketRef.current += 1;
       setApproved((current) => ({ ...current, [id]: !current[id] }));
       dispatch({ type: 'sources:changed' });
     },
-    [session.phase],
+    [stopIfSpeechActive],
   );
+
+  const revokeApproval = useCallback(async () => {
+    const hadSpeech = session.phase === 'speaking' || session.phase === 'activating';
+    if (!(await stopIfSpeechActive())) {
+      return;
+    }
+    ticketRef.current += 1;
+    if (hadSpeech) {
+      dispatch({ type: 'stop:done' });
+    }
+    dispatch({ type: 'approval:set', approved: false });
+  }, [session.phase, stopIfSpeechActive]);
 
   const capture = useCallback(async () => {
     const ticket = ++ticketRef.current;
@@ -133,8 +160,24 @@ export default function App() {
     }
     const ticket = ticketRef.current;
     dispatch({ type: 'speak:start' });
+    const releaseLateSpeech = () => {
+      // A timed-out request that eventually succeeds must release the
+      // orphaned backend speech, never restore a session we already left.
+      void (async () => {
+        try {
+          await api.stop();
+          dispatch({ type: 'activation:settled' });
+        } catch (error) {
+          dispatch({ type: 'activation:unconfirmed', error: errorMessage(error) });
+        }
+      })();
+    };
     try {
-      const speech = await activateSpeech(session.answer.answer_id, ACTIVATION_TIMEOUT_MS);
+      const speech = await activateSpeech(
+        session.answer.answer_id,
+        activationTimeoutMs,
+        releaseLateSpeech,
+      );
       if (ticket !== ticketRef.current) {
         // Reset or invalidated while activating: release the orphaned backend
         // speech instead of restoring a session the candidate already left.
@@ -149,9 +192,10 @@ export default function App() {
       dispatch({ type: 'speak:done', speech });
     } catch (error) {
       // Ambiguous failure: the backend may have started speech even though
-      // the request failed or timed out. Confirm it is idle before
-      // returning to Ready; otherwise stay somewhere stoppable.
+      // the request failed or timed out. Invalidate first so a late success
+      // can only clean up, never start speech behind our back.
       const stale = ticket !== ticketRef.current;
+      ticketRef.current += 1;
       try {
         await api.stop();
         dispatch(
@@ -167,7 +211,7 @@ export default function App() {
         );
       }
     }
-  }, [session.answer]);
+  }, [session.answer, activationTimeoutMs]);
 
   const interrupt = useCallback(async () => {
     const ticket = ++ticketRef.current;
@@ -187,24 +231,12 @@ export default function App() {
   }, []);
 
   const reset = useCallback(async () => {
-    const needsStop = session.phase === 'speaking' || session.phase === 'activating';
-    const ticket = ++ticketRef.current;
-    if (needsStop) {
-      try {
-        await api.stop();
-      } catch (error) {
-        if (ticket !== ticketRef.current) {
-          return;
-        }
-        dispatch({ type: 'stop:failed', error: errorMessage(error) });
-        return;
-      }
-      if (ticket !== ticketRef.current) {
-        return;
-      }
+    if (!(await stopIfSpeechActive())) {
+      return;
     }
+    ticketRef.current += 1;
     dispatch({ type: 'reset' });
-  }, [session.phase]);
+  }, [stopIfSpeechActive]);
 
   const retryStop = useCallback(async () => {
     try {
@@ -383,13 +415,11 @@ export default function App() {
               checked={session.answerApproved}
               disabled={session.answer?.status !== 'grounded'}
               onChange={(event) => {
-                const checked = event.target.checked;
-                if (!checked) {
-                  // Revoking approval invalidates a pending activation: the
-                  // late response must release speech, not start it.
-                  ticketRef.current += 1;
+                if (event.target.checked) {
+                  dispatch({ type: 'approval:set', approved: true });
+                } else {
+                  void revokeApproval();
                 }
-                dispatch({ type: 'approval:set', approved: checked });
               }}
             />
             I reviewed this answer and approve it.

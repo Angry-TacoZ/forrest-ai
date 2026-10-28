@@ -60,6 +60,8 @@ Open http://localhost:5173 in a browser.
 - Activation runs through an explicit Starting speech state with Interrupt
   available; ambiguous failures attempt backend cleanup and keep a retryable
   stop until speech is confirmed stopped.
+- Revoking answer approval while speech is active stops first; timed-out
+  activations can never start speech late without the candidate re-activating.
 
 ## Checks
 

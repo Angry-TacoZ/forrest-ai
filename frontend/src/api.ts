@@ -89,13 +89,31 @@ function post<T>(path: string, body: unknown): Promise<T> {
 
 export const ACTIVATION_TIMEOUT_MS = 15000;
 
-export async function activateSpeech(answerId: string, timeoutMs: number): Promise<SpeechState> {
+export async function activateSpeech(
+  answerId: string,
+  timeoutMs: number,
+  onLateSuccess?: (speech: SpeechState) => void,
+): Promise<SpeechState> {
+  let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const speakPromise = api.speak(answerId);
+  // Keep observing the request after a timeout wins: a late success means
+  // the backend may have started speech, so the caller must clean up.
+  // A late rejection needs no action (the timeout path already cleaned up).
+  void speakPromise.then(
+    (speech) => {
+      if (timedOut) {
+        onLateSuccess?.(speech);
+      }
+    },
+    () => {},
+  );
   try {
     return await Promise.race([
-      api.speak(answerId),
+      speakPromise,
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
+          timedOut = true;
           reject(new Error('Speech activation timed out.'));
         }, timeoutMs);
       }),
