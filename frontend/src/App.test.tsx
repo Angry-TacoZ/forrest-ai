@@ -43,6 +43,14 @@ function stubApi() {
         duration_ms: 1800,
       });
     }
+    if (url === '/api/speech') {
+      return jsonResponse({
+        status: 'idle',
+        answer_id: null,
+        voice: 'forrest-synthetic-v1',
+        activation_id: null,
+      });
+    }
     throw new Error(`unexpected request: ${url}`);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -122,6 +130,7 @@ interface FullApiOptions {
   revoke?: () => Promise<Response>;
   selection?: () => Promise<Response>;
   selectionGet?: () => Promise<Response>;
+  speechState?: () => Promise<Response>;
 }
 
 function stubFullApi(options: FullApiOptions = {}) {
@@ -171,6 +180,12 @@ function stubFullApi(options: FullApiOptions = {}) {
     if (url === '/api/stop') {
       if (options.stop) {
         return options.stop();
+      }
+      return jsonResponse(IDLE_SPEECH);
+    }
+    if (url === '/api/speech') {
+      if (options.speechState) {
+        return options.speechState();
       }
       return jsonResponse(IDLE_SPEECH);
     }
@@ -898,6 +913,76 @@ describe('server-side approval', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('revoke unreachable');
     expect(screen.getByText('State: Ready for review')).toBeInTheDocument();
     expect(screen.getByText(/Based on your approved materials/)).toBeInTheDocument();
+  });
+
+  it('prevents activation while a source change is pending', async () => {
+    let resolveSelection!: (response: Response) => void;
+    const selectionGate = new Promise<Response>((resolve) => {
+      resolveSelection = resolve;
+    });
+    const fetchMock = stubFullApi({ selection: () => selectionGate });
+    await driveToReady();
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Exclude' }))[0]);
+
+    await vi.waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeDisabled();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    resolveSelection(jsonResponse({ approved_source_ids: ['project-latency'], epoch: 1 }));
+    await screen.findByText('1 of 2 sources approved for retrieval.');
+
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.some(([url]) => url === '/api/speak')).toBe(false);
+    expect(screen.getByText('State: Question captured')).toBeInTheDocument();
+  });
+
+  it('stops orphaned backend speech when the workspace loads', async () => {
+    const fetchMock = stubFullApi({
+      speechState: () =>
+        Promise.resolve(
+          jsonResponse({
+            status: 'speaking',
+            answer_id: 'ans-1',
+            voice: 'forrest-synthetic-v1',
+            activation_id: 'spk-old',
+          }),
+        ),
+    });
+    render(<App />);
+
+    expect(await screen.findByText('Backend: online')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith('/api/stop', expect.anything());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('offers a retry when load-time speech cleanup fails', async () => {
+    let stopCalls = 0;
+    stubFullApi({
+      speechState: () =>
+        Promise.resolve(
+          jsonResponse({
+            status: 'speaking',
+            answer_id: 'ans-1',
+            voice: 'forrest-synthetic-v1',
+            activation_id: 'spk-old',
+          }),
+        ),
+      stop: async () => {
+        stopCalls += 1;
+        if (stopCalls === 1) {
+          return Promise.reject(new Error('cleanup unreachable'));
+        }
+        return jsonResponse(IDLE_SPEECH);
+      },
+    });
+    render(<App />);
+
+    expect(await screen.findByText('Backend: online')).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('cleanup unreachable');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry stop' }));
+    await vi.waitFor(() => {
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
   });
 
   it('unchecks approval when activation is refused as unauthorized', async () => {

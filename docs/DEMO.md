@@ -64,6 +64,9 @@ Open http://localhost:5173 in a browser.
   approvals are rejected even by direct API callers.
 - Reloading the workspace restores the last synced selection instead of
   defaults, and late approval responses for invalidated answers are dropped.
+- Activation is locked while a source change is in flight, and reloading
+  during speech stops the orphaned backend speech (with a retry control if
+  cleanup fails) instead of stranding it without an Interrupt.
 - Activation runs through an explicit Starting speech state with Interrupt
   available; ambiguous failures attempt backend cleanup and keep a retryable
   stop until speech is confirmed stopped.

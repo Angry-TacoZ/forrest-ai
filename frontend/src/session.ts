@@ -55,6 +55,7 @@ export type SessionAction =
   | { type: 'activation:failed'; error: string }
   | { type: 'activation:settled' }
   | { type: 'activation:unconfirmed'; error: string }
+  | { type: 'load:speech-unconfirmed'; error: string }
   | { type: 'sources:changed' }
   | { type: 'fail'; error: string }
   | { type: 'reset' };
@@ -161,6 +162,11 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         error: action.error,
         stopUnconfirmed: state.phase !== 'activating' && state.phase !== 'speaking',
       };
+    case 'load:speech-unconfirmed':
+      // Startup found backend speech it cannot own and the cleanup stop
+      // failed: keep the error and its retry control until the backend
+      // confirms idle, without touching the fresh session phase.
+      return { ...state, error: action.error, stopUnconfirmed: true };
     case 'sources:changed':
       // Approval edits invalidate the draft, evidence, and candidate approval.
       // The question is kept so the candidate can re-draft under the new set.

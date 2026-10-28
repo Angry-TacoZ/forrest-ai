@@ -69,6 +69,26 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
         if (cancelled) {
           return;
         }
+        // Reconcile orphaned backend speech (e.g. after a reload during
+        // speech): the fresh session cannot own it, so stop it. A failure
+        // keeps a retry control instead of stranding speech silently.
+        try {
+          const speech = await api.speech();
+          if (cancelled) {
+            return;
+          }
+          if (speech.status === 'speaking') {
+            await api.stop();
+          }
+        } catch (error) {
+          if (cancelled) {
+            return;
+          }
+          dispatch({ type: 'load:speech-unconfirmed', error: errorMessage(error) });
+        }
+        if (cancelled) {
+          return;
+        }
         setApproved(initialApproved);
         setBackend('online');
       } catch {
@@ -547,7 +567,11 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
             I reviewed this answer and approve it.
           </label>
           <div className="row">
-            <button type="button" onClick={activate} disabled={!canActivate(session)}>
+            <button
+              type="button"
+              onClick={activate}
+              disabled={!canActivate(session) || selectionPending}
+            >
               Activate Forrest
             </button>
             <button

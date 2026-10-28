@@ -219,6 +219,16 @@ describe('session reducer', () => {
     expect(reset.stopUnconfirmed).toBe(true);
   });
 
+  it('keeps a retry control when load-time speech cleanup fails', () => {
+    const loaded = sessionReducer(
+      initialSession,
+      { type: 'load:speech-unconfirmed', error: 'cleanup unreachable' },
+    );
+    expect(loaded.phase).toBe('idle');
+    expect(loaded.error).toBe('cleanup unreachable');
+    expect(loaded.stopUnconfirmed).toBe(true);
+  });
+
   it('clears the retry flag when speech is confirmed stopped', () => {
     const stranded: SessionState = {
       ...initialSession,
