@@ -4,7 +4,7 @@ A consented, source-grounded interview assistant built for the **Meta Global AI 
 
 Forrest AI helps candidates communicate **verified personal experience** during job interviews — with explicit employer/interviewer consent, candidate review before every spoken answer, and no invented qualifications.
 
-> **Status:** Repository bootstrap. Engineering rules are in place (`AGENTS.md`); application implementation has not started yet.
+> **Status:** Application foundation: mock pipeline plus interview workspace. Live providers are not integrated yet.
 
 ## Purpose
 
@@ -75,7 +75,11 @@ Interview recordings and transcripts are not retained by default, and imported c
 - `AGENTS.md` — engineering rules: GitHub workflow, verification gates, evaluation, security, acceptance criteria.
 - `README.md` — this file.
 - `.gitignore` — Python, Node.js, credentials, local databases, candidate records, recordings, and build artifacts.
-- `evals/` *(planned)* — fixed test cases, baseline/candidate results, execution traces, methodology.
+- `frontend/` — React + TypeScript + Vite interview workspace.
+- `backend/` — Python FastAPI service with deterministic mock providers.
+- `evals/` — fixed test cases, baseline results, and the suite runner.
+- `docs/DEMO.md` — how to run the end-to-end demonstration.
+- `.github/workflows/ci.yml` — frontend, backend, eval, and secret-detection checks.
 
 ## Engineering workflow
 
