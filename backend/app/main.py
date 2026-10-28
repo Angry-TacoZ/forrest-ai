@@ -46,14 +46,26 @@ def post_transcribe(body: TranscribeRequest) -> Transcript:
     return mocks.transcribe(body.scenario)
 
 
+def _require_current_selection(approved_ids: list[str]) -> None:
+    """Reject source IDs outside the candidate's last synced selection."""
+    outside = sorted(set(approved_ids) - mocks.current_selection())
+    if outside:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Sources are outside the current selection: {', '.join(outside)}.",
+        )
+
+
 @app.post("/api/retrieve")
 def post_retrieve(body: RetrieveRequest) -> RetrieveResponse:
+    _require_current_selection(body.approved_source_ids)
     evidence, searched = knowledge.retrieve(body.question, body.approved_source_ids)
     return RetrieveResponse(evidence=evidence, searched_sources=searched)
 
 
 @app.post("/api/answer")
 def post_answer(body: AnswerRequest) -> AnswerResponse:
+    _require_current_selection(body.approved_source_ids)
     try:
         evidence = knowledge.authoritative_evidence(
             body.question, body.evidence, body.approved_source_ids
@@ -85,6 +97,14 @@ def post_revoke(body: RevokeRequest) -> ApprovalStatus:
 def put_selection(body: SelectionRequest) -> SelectionState:
     epoch = mocks.set_selection(body.approved_source_ids)
     return SelectionState(approved_source_ids=sorted(body.approved_source_ids), epoch=epoch)
+
+
+@app.get("/api/selection")
+def get_selection() -> SelectionState:
+    return SelectionState(
+        approved_source_ids=sorted(mocks.current_selection()),
+        epoch=mocks.selection_epoch(),
+    )
 
 
 @app.post("/api/speak")

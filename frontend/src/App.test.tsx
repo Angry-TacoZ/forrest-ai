@@ -121,10 +121,11 @@ interface FullApiOptions {
   approve?: () => Promise<Response>;
   revoke?: () => Promise<Response>;
   selection?: () => Promise<Response>;
+  selectionGet?: () => Promise<Response>;
 }
 
 function stubFullApi(options: FullApiOptions = {}) {
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+  const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url === '/api/health') {
       return jsonResponse({ status: 'ok', service: 'forrest-ai-backend', version: '0.1.0' });
@@ -186,12 +187,23 @@ function stubFullApi(options: FullApiOptions = {}) {
       return jsonResponse({ answer_id: 'ans-1', status: 'unapproved', revoked: true });
     }
     if (url === '/api/selection') {
-      if (options.selection) {
-        return options.selection();
+      if (init?.method === 'PUT') {
+        if (options.selection) {
+          return options.selection();
+        }
+        return jsonResponse({
+          approved_source_ids: ['resume-summary', 'project-latency'],
+          epoch: 1,
+        });
+      }
+      // Default GET reports a never-synced selection so tests start from
+      // the per-source defaults unless they override selectionGet.
+      if (options.selectionGet) {
+        return options.selectionGet();
       }
       return jsonResponse({
         approved_source_ids: ['resume-summary', 'project-latency'],
-        epoch: 1,
+        epoch: 0,
       });
     }
     throw new Error(`unexpected request: ${url}`);
@@ -516,7 +528,7 @@ describe('activation lifecycle', () => {
     expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeDisabled();
   });
 
-  it('keeps approval when stopping fails during revocation', async () => {
+  it('clears approval but keeps interruption usable when stopping fails during revocation', async () => {
     stubFullApi({
       stop: () => Promise.reject(new Error('stop unreachable')),
     });
@@ -525,7 +537,8 @@ describe('activation lifecycle', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('stop unreachable');
     expect(screen.getByText('State: Speaking')).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: /I reviewed this answer/ })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /I reviewed this answer/ })).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Interrupt' })).toBeEnabled();
   });
 
@@ -795,10 +808,9 @@ describe('server-side approval', () => {
     await screen.findByText('1 of 2 sources approved for retrieval.');
 
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
-    const selections = calls.filter(([url]) => url === '/api/selection');
-    expect(selections).toHaveLength(1);
-    expect(selections[0][1].method).toBe('PUT');
-    expect(JSON.parse(selections[0][1].body as string)).toEqual({
+    const syncs = calls.filter(([url, init]) => url === '/api/selection' && init.method === 'PUT');
+    expect(syncs).toHaveLength(1);
+    expect(JSON.parse(syncs[0][1].body as string)).toEqual({
       approved_source_ids: ['project-latency'],
     });
   });
@@ -821,6 +833,42 @@ describe('server-side approval', () => {
     resolveSelection(jsonResponse({ approved_source_ids: ['project-latency'], epoch: 1 }));
     await screen.findByText('1 of 2 sources approved for retrieval.');
     expect((await screen.findAllByRole('button', { name: 'Approve' }))[0]).toBeEnabled();
+  });
+
+  it('restores the last synced selection when the workspace loads', async () => {
+    stubFullApi({
+      selectionGet: () =>
+        Promise.resolve(
+          jsonResponse({ approved_source_ids: ['project-latency'], epoch: 2 }),
+        ),
+    });
+    render(<App />);
+
+    expect(await screen.findByText('Backend: online')).toBeInTheDocument();
+    expect(
+      await screen.findByText('1 of 2 sources approved for retrieval.'),
+    ).toBeInTheDocument();
+  });
+
+  it('ignores a stale approval response after the session moved on', async () => {
+    let resolveApprove!: (response: Response) => void;
+    const approveGate = new Promise<Response>((resolve) => {
+      resolveApprove = resolve;
+    });
+    stubFullApi({ approve: () => approveGate });
+    await driveToDraft();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    await screen.findByText('State: Idle');
+    fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
+    await screen.findByText(TRANSCRIPT_QUESTION);
+    fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
+    await screen.findByText(/Based on your approved materials/);
+    resolveApprove(jsonResponse({ answer_id: 'ans-1', status: 'approved', revoked: false }));
+    await flushAsyncWork(approveGate);
+
+    expect(screen.getByRole('checkbox', { name: /I reviewed this answer/ })).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeDisabled();
   });
 
   it('aborts a source toggle when the selection sync fails', async () => {

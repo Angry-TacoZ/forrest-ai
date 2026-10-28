@@ -50,9 +50,26 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
           return;
         }
         setSources(data.sources);
-        setApproved(
-          Object.fromEntries(data.sources.map((source) => [source.id, source.approved_default])),
+        // A reload must not resurrect exclusions the backend still holds: a
+        // synced selection (epoch > 0) wins over the per-source defaults.
+        let initialApproved = Object.fromEntries(
+          data.sources.map((source) => [source.id, source.approved_default]),
         );
+        try {
+          const selection = await api.getSelection();
+          if (selection.epoch > 0) {
+            const synced = new Set(selection.approved_source_ids);
+            initialApproved = Object.fromEntries(
+              data.sources.map((source) => [source.id, synced.has(source.id)]),
+            );
+          }
+        } catch {
+          // Fall through to defaults when the selection is unavailable.
+        }
+        if (cancelled) {
+          return;
+        }
+        setApproved(initialApproved);
         setBackend('online');
       } catch {
         if (!cancelled) {
@@ -128,15 +145,25 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
     if (!session.answer || session.answer.status !== 'grounded') {
       return;
     }
+    // The approval below belongs to this answer only: if the session moved
+    // on (reset, new draft, changed sources), the late response is dropped
+    // instead of marking a different answer as reviewed.
+    const ticket = ticketRef.current;
     setApprovalPending(true);
     try {
       await api.approve(session.answer.answer_id, approvedIds);
     } catch (error) {
+      if (ticket !== ticketRef.current) {
+        return;
+      }
       // Phase is kept so Interrupt stays usable when speech may be active.
       dispatch({ type: 'stop:failed', error: errorMessage(error) });
       return;
     } finally {
       setApprovalPending(false);
+    }
+    if (ticket !== ticketRef.current) {
+      return;
     }
     dispatch({ type: 'approval:set', approved: true });
   }, [approvedIds, session.answer]);
@@ -145,18 +172,30 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
     if (!session.answer) {
       return;
     }
+    // Like approvals, a revoke response belongs to this session only: if the
+    // session moved on, the server-side revoke still stands but no local
+    // state is touched.
+    const ticket = ticketRef.current;
     setApprovalPending(true);
     // Revoke before stopping: when the revoke fails, nothing has changed
-    // and the approval stays checked; when the stop fails next, the
-    // approval is already revoked, which is the safe direction.
+    // and the approval stays checked. Once the revoke succeeds, the local
+    // approval is cleared immediately so the checkbox never claims an
+    // approval the backend no longer holds, even if stopping fails next.
     try {
       await api.revoke(session.answer.answer_id);
     } catch (error) {
+      if (ticket !== ticketRef.current) {
+        return;
+      }
       dispatch({ type: 'stop:failed', error: errorMessage(error) });
       return;
     } finally {
       setApprovalPending(false);
     }
+    if (ticket !== ticketRef.current) {
+      return;
+    }
+    dispatch({ type: 'approval:set', approved: false });
     const hadSpeech = session.phase === 'speaking' || session.phase === 'activating';
     if (!(await stopIfSpeechActive())) {
       return;
@@ -165,7 +204,6 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
     if (hadSpeech) {
       dispatch({ type: 'stop:done' });
     }
-    dispatch({ type: 'approval:set', approved: false });
   }, [session.answer, session.phase, stopIfSpeechActive]);
 
   const capture = useCallback(async () => {

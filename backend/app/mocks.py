@@ -48,6 +48,16 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def selection_epoch() -> int:
+    """Return the current selection epoch."""
+    return _selection_epoch
+
+
+def current_selection() -> set[str]:
+    """Return a copy of the last synced source selection."""
+    return set(_current_selection)
+
+
 def set_selection(approved_ids: list[str]) -> int:
     """Record a new source selection; every change invalidates prior approvals."""
     global _selection_epoch

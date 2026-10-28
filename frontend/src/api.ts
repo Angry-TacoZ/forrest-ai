@@ -156,6 +156,7 @@ export const api = {
   revoke: (answer_id: string) => post<ApprovalStatus>('/api/revoke', { answer_id }),
   setSelection: (approved_source_ids: string[]) =>
     put<SelectionState>('/api/selection', { approved_source_ids }),
+  getSelection: () => request<SelectionState>('/api/selection'),
   speak: (answer_id: string) => post<SpeechState>('/api/speak', { answer_id }),
   stop: (activationId?: string | null) =>
     post<SpeechState>('/api/stop', activationId ? { activation_id: activationId } : {}),

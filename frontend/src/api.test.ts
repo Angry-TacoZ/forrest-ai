@@ -197,6 +197,19 @@ describe('api client', () => {
     );
   });
 
+  it('reads the synced source selection', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ approved_source_ids: ['project-latency'], epoch: 2 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await api.getSelection();
+
+    expect(result.epoch).toBe(2);
+    expect(result.approved_source_ids).toEqual(['project-latency']);
+    expect(fetchMock).toHaveBeenCalledWith('/api/selection', expect.anything());
+  });
+
   it('stops unconditionally without an activation id', async () => {
     const fetchMock = vi.fn().mockImplementation(() => jsonResponse({ status: 'idle' }));
     vi.stubGlobal('fetch', fetchMock);

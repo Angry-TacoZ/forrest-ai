@@ -64,6 +64,52 @@ def test_retrieve_finds_approved_evidence() -> None:
     assert all(item["relevance"] > 0 for item in body["evidence"])
 
 
+def test_retrieve_rejects_sources_outside_synced_selection() -> None:
+    narrowed = client.put(
+        "/api/selection", json={"approved_source_ids": ["project-latency"]}
+    )
+    assert narrowed.status_code == 200
+    rejected = client.post(
+        "/api/retrieve", json={"question": SUPPORTED, "approved_source_ids": ALL_SOURCES}
+    )
+    assert rejected.status_code == 422
+    assert "current selection" in rejected.json()["detail"]
+    allowed = client.post(
+        "/api/retrieve",
+        json={"question": SUPPORTED, "approved_source_ids": ["project-latency"]},
+    )
+    assert allowed.status_code == 200
+    assert [item["source_id"] for item in allowed.json()["evidence"]] == ["project-latency"]
+
+
+def test_answer_rejects_sources_outside_synced_selection() -> None:
+    evidence = client.post(
+        "/api/retrieve", json={"question": SUPPORTED, "approved_source_ids": ALL_SOURCES}
+    ).json()["evidence"]
+    narrowed = client.put(
+        "/api/selection", json={"approved_source_ids": ["project-latency"]}
+    )
+    assert narrowed.status_code == 200
+    rejected = client.post(
+        "/api/answer",
+        json={
+            "question": SUPPORTED,
+            "evidence": evidence,
+            "approved_source_ids": ALL_SOURCES,
+        },
+    )
+    assert rejected.status_code == 422
+    assert "current selection" in rejected.json()["detail"]
+
+
+def test_selection_round_trip() -> None:
+    put = client.put("/api/selection", json={"approved_source_ids": ["project-latency"]})
+    assert put.status_code == 200
+    got = client.get("/api/selection").json()
+    assert got["approved_source_ids"] == ["project-latency"]
+    assert got["epoch"] == put.json()["epoch"]
+
+
 def test_retrieve_respects_excluded_sources() -> None:
     response = client.post(
         "/api/retrieve",
