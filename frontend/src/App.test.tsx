@@ -176,13 +176,18 @@ async function renderReadyApp() {
   await screen.findByText('Backend: online');
 }
 
-async function driveToSpeaking() {
+async function driveToReady() {
   await renderReadyApp();
   fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
   await screen.findByText(TRANSCRIPT_QUESTION);
   fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
   await screen.findByText(/Based on your approved materials/);
   fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+  await screen.findByText('State: Ready for review');
+}
+
+async function driveToSpeaking() {
+  await driveToReady();
   fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
   await screen.findByText('State: Speaking');
 }
@@ -332,5 +337,139 @@ describe('speech lifecycle guards', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/stop', expect.anything());
     expect(screen.getByText('State: Idle')).toBeInTheDocument();
     expect(screen.queryByText(TRANSCRIPT_QUESTION)).not.toBeInTheDocument();
+  });
+});
+
+describe('activation lifecycle', () => {
+  const SPEAKING = {
+    status: 'speaking',
+    answer_id: 'ans-1',
+    voice: 'forrest-synthetic-v1',
+  };
+
+  function deferredResponse() {
+    let resolve!: (response: Response) => void;
+    let reject!: (error: Error) => void;
+    const gate = new Promise<Response>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { gate, resolve, reject };
+  }
+
+  it('keeps Interrupt available during delayed activation', async () => {
+    const { gate: speakGate, resolve } = deferredResponse();
+    stubFullApi({ speakGate });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Starting speech');
+
+    expect(screen.getByRole('button', { name: 'Interrupt' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Capture question' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Draft answer' })).toBeDisabled();
+
+    resolve(jsonResponse(SPEAKING));
+    await screen.findByText('State: Speaking');
+  });
+
+  it('prevents a late activation response from overwriting an interruption', async () => {
+    const { gate: speakGate, resolve } = deferredResponse();
+    const fetchMock = stubFullApi({ speakGate });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Starting speech');
+    fireEvent.click(screen.getByRole('button', { name: 'Interrupt' }));
+    await screen.findByText('State: Ready for review');
+    resolve(jsonResponse(SPEAKING));
+    await flushAsyncWork(speakGate);
+
+    expect(screen.getByText('State: Ready for review')).toBeInTheDocument();
+    expect(screen.queryByText('State: Speaking')).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/stop')).toHaveLength(2);
+  });
+
+  it('returns a failed activation to Ready when cleanup confirms idle', async () => {
+    const { gate: speakGate, reject } = deferredResponse();
+    const fetchMock = stubFullApi({ speakGate });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Starting speech');
+    reject(new Error('speak boom'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('speak boom');
+    expect(screen.getByText('State: Ready for review')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeEnabled();
+    expect(fetchMock).toHaveBeenCalledWith('/api/stop', expect.anything());
+  });
+
+  it('preserves a retryable stop when activation cleanup fails', async () => {
+    const { gate: speakGate, reject } = deferredResponse();
+    let stopCalls = 0;
+    stubFullApi({
+      speakGate,
+      stop: async () => {
+        stopCalls += 1;
+        if (stopCalls === 1) {
+          return Promise.reject(new Error('stop unreachable'));
+        }
+        return jsonResponse(IDLE_SPEECH);
+      },
+    });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Starting speech');
+    reject(new Error('speak boom'));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('stop unreachable');
+    expect(screen.getByText('State: Starting speech')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Interrupt' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Interrupt' }));
+    await screen.findByText('State: Ready for review');
+  });
+
+  it('offers a retry stop when cleanup fails after a reset', async () => {
+    const { gate: speakGate, resolve } = deferredResponse();
+    let stopCalls = 0;
+    stubFullApi({
+      speakGate,
+      stop: async () => {
+        stopCalls += 1;
+        if (stopCalls === 2) {
+          return Promise.reject(new Error('cleanup unreachable'));
+        }
+        return jsonResponse(IDLE_SPEECH);
+      },
+    });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Starting speech');
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    await screen.findByText('State: Idle');
+    resolve(jsonResponse(SPEAKING));
+    await flushAsyncWork(speakGate);
+
+    expect(screen.getByText('State: Idle')).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('cleanup unreachable');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry stop' }));
+    await vi.waitFor(() => {
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+    expect(screen.queryByRole('button', { name: 'Retry stop' })).not.toBeInTheDocument();
+  });
+
+  it('prevents speech when approval is revoked during activation', async () => {
+    const { gate: speakGate, resolve } = deferredResponse();
+    const fetchMock = stubFullApi({ speakGate });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Starting speech');
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    resolve(jsonResponse(SPEAKING));
+    await flushAsyncWork(speakGate);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/stop', expect.anything());
+    expect(screen.getByText('State: Ready for review')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeDisabled();
   });
 });
