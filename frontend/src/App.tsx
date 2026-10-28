@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import './App.css';
-import { ACTIVATION_TIMEOUT_MS, activateSpeech, api, errorMessage } from './api.ts';
+import { ACTIVATION_TIMEOUT_MS, ApiError, activateSpeech, api, errorMessage } from './api.ts';
 import type { Scenario, Source } from './api.ts';
 import {
   canActivate,
@@ -24,6 +24,9 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
   const [approved, setApproved] = useState<Record<string, boolean>>({});
   const [scenario, setScenario] = useState<Scenario>('supported');
   const [backend, setBackend] = useState<BackendStatus>('checking');
+  // An approval request is in flight; the checkbox stays disabled so rapid
+  // check/uncheck toggles cannot interleave approve and revoke calls.
+  const [approvalPending, setApprovalPending] = useState(false);
   // Bumped whenever the approval selection or session is invalidated so
   // in-flight transcribe/retrieve/answer/speak responses cannot restore
   // stale data. Every stop-initiating action claims a ticket first so a
@@ -95,14 +98,58 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
       if (!(await stopIfSpeechActive())) {
         return;
       }
+      const nextApproved = { ...approved, [id]: !approved[id] };
+      const nextIds = sources
+        .filter((source) => nextApproved[source.id])
+        .map((source) => source.id);
+      // Sync the selection before invalidating locally: the backend epoch
+      // bump is what stales every prior approval server-side.
+      try {
+        await api.setSelection(nextIds);
+      } catch (error) {
+        dispatch({ type: 'stop:failed', error: errorMessage(error) });
+        return;
+      }
       ticketRef.current += 1;
-      setApproved((current) => ({ ...current, [id]: !current[id] }));
+      setApproved(nextApproved);
       dispatch({ type: 'sources:changed' });
     },
-    [stopIfSpeechActive],
+    [approved, sources, stopIfSpeechActive],
   );
 
+  const approveAnswer = useCallback(async () => {
+    if (!session.answer || session.answer.status !== 'grounded') {
+      return;
+    }
+    setApprovalPending(true);
+    try {
+      await api.approve(session.answer.answer_id, approvedIds);
+    } catch (error) {
+      // Phase is kept so Interrupt stays usable when speech may be active.
+      dispatch({ type: 'stop:failed', error: errorMessage(error) });
+      return;
+    } finally {
+      setApprovalPending(false);
+    }
+    dispatch({ type: 'approval:set', approved: true });
+  }, [approvedIds, session.answer]);
+
   const revokeApproval = useCallback(async () => {
+    if (!session.answer) {
+      return;
+    }
+    setApprovalPending(true);
+    // Revoke before stopping: when the revoke fails, nothing has changed
+    // and the approval stays checked; when the stop fails next, the
+    // approval is already revoked, which is the safe direction.
+    try {
+      await api.revoke(session.answer.answer_id);
+    } catch (error) {
+      dispatch({ type: 'stop:failed', error: errorMessage(error) });
+      return;
+    } finally {
+      setApprovalPending(false);
+    }
     const hadSpeech = session.phase === 'speaking' || session.phase === 'activating';
     if (!(await stopIfSpeechActive())) {
       return;
@@ -112,7 +159,7 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
       dispatch({ type: 'stop:done' });
     }
     dispatch({ type: 'approval:set', approved: false });
-  }, [session.phase, stopIfSpeechActive]);
+  }, [session.answer, session.phase, stopIfSpeechActive]);
 
   const capture = useCallback(async () => {
     const ticket = ++ticketRef.current;
@@ -199,6 +246,11 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
         // touch it (no stop, no ticket bump, no state transition).
         return;
       }
+      if (error instanceof ApiError && error.status === 403) {
+        // The backend refused authorization (unapproved, revoked, stale, or
+        // expired): resync the checkbox instead of trusting local state.
+        dispatch({ type: 'approval:set', approved: false });
+      }
       // Ambiguous failure: the backend may have started speech even though
       // the request failed or timed out. Ownership is rechecked after the
       // cleanup await, since a newer activation may have begun meanwhile.
@@ -245,12 +297,22 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
   }, []);
 
   const reset = useCallback(async () => {
+    // Revoke first so a failed reset never leaves a server approval behind
+    // for an answer the session no longer shows.
+    if (session.answer) {
+      try {
+        await api.revoke(session.answer.answer_id);
+      } catch (error) {
+        dispatch({ type: 'stop:failed', error: errorMessage(error) });
+        return;
+      }
+    }
     if (!(await stopIfSpeechActive())) {
       return;
     }
     ticketRef.current += 1;
     dispatch({ type: 'reset' });
-  }, [stopIfSpeechActive]);
+  }, [session.answer, stopIfSpeechActive]);
 
   const retryStop = useCallback(async () => {
     try {
@@ -427,10 +489,10 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
             <input
               type="checkbox"
               checked={session.answerApproved}
-              disabled={session.answer?.status !== 'grounded'}
+              disabled={session.answer?.status !== 'grounded' || approvalPending}
               onChange={(event) => {
                 if (event.target.checked) {
-                  dispatch({ type: 'approval:set', approved: true });
+                  void approveAnswer();
                 } else {
                   void revokeApproval();
                 }

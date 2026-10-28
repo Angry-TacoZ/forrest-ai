@@ -66,6 +66,30 @@ class StopRequest(BaseModel):
     activation_id: str | None = None
 
 
+class ApproveRequest(BaseModel):
+    answer_id: str
+    approved_source_ids: list[str] = Field(default_factory=list)
+
+
+class ApprovalStatus(BaseModel):
+    answer_id: str
+    status: str  # "approved" | "unapproved"
+    revoked: bool = False
+
+
+class RevokeRequest(BaseModel):
+    answer_id: str
+
+
+class SelectionRequest(BaseModel):
+    approved_source_ids: list[str] = Field(default_factory=list)
+
+
+class SelectionState(BaseModel):
+    approved_source_ids: list[str]
+    epoch: int
+
+
 class SpeechState(BaseModel):
     status: str  # "idle" | "speaking"
     answer_id: str | None = None

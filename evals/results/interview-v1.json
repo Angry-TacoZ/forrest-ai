@@ -17,6 +17,10 @@
         "project-latency"
       ],
       "claims_ok": true,
+      "unapproved_speak_status": 403,
+      "approval_status": 200,
+      "speak_status": 200,
+      "auth_ok": true,
       "pass": true
     },
     {
@@ -29,6 +33,10 @@
         "project-latency"
       ],
       "claims_ok": true,
+      "unapproved_speak_status": 403,
+      "approval_status": 200,
+      "speak_status": 200,
+      "auth_ok": true,
       "pass": true
     },
     {
@@ -39,6 +47,10 @@
       "evidence_count": 0,
       "evidence_sources": [],
       "claims_ok": true,
+      "unapproved_speak_status": 422,
+      "approval_status": 422,
+      "speak_status": 422,
+      "auth_ok": true,
       "pass": true
     }
   ],

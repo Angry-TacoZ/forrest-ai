@@ -51,12 +51,16 @@ Open http://localhost:5173 in a browser.
 
 ## Session safety
 
-- Reset during speaking stops backend speech first; if the stop fails, the
-  error is shown and Interrupt stays available for a retry.
-- Changing source approvals clears the draft, evidence, and candidate
+- Reset during speaking revokes the approval and stops backend speech first;
+  if either fails, the error is shown and the session is left intact.
+- Changing source approvals syncs the selection to the backend (staling every
+  prior approval server-side), then clears the draft, evidence, and candidate
   approval; in-flight requests from the older selection are discarded.
 - The backend re-validates evidence against server records: unknown, modified,
   excluded, or mismatched evidence is rejected and can never be spoken.
+- Answers start unapproved; nothing may be spoken without explicit, current,
+  server-validated candidate approval. Revoked, stale, and expired (15 min)
+  approvals are rejected even by direct API callers.
 - Activation runs through an explicit Starting speech state with Interrupt
   available; ambiguous failures attempt backend cleanup and keep a retryable
   stop until speech is confirmed stopped.

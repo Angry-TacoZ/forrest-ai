@@ -47,6 +47,17 @@ export interface SpeechState {
   activation_id: string | null;
 }
 
+export interface ApprovalStatus {
+  answer_id: string;
+  status: 'approved' | 'unapproved';
+  revoked: boolean;
+}
+
+export interface SelectionState {
+  approved_source_ids: string[];
+  epoch: number;
+}
+
 export class ApiError extends Error {
   status: number;
 
@@ -86,6 +97,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 function post<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, { method: 'POST', body: JSON.stringify(body) });
+}
+
+function put<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, { method: 'PUT', body: JSON.stringify(body) });
 }
 
 export const ACTIVATION_TIMEOUT_MS = 15000;
@@ -136,6 +151,11 @@ export const api = {
     post<RetrieveResponse>('/api/retrieve', { question, approved_source_ids }),
   answer: (question: string, evidence: Evidence[], approved_source_ids: string[]) =>
     post<AnswerResponse>('/api/answer', { question, evidence, approved_source_ids }),
+  approve: (answer_id: string, approved_source_ids: string[]) =>
+    post<ApprovalStatus>('/api/approve', { answer_id, approved_source_ids }),
+  revoke: (answer_id: string) => post<ApprovalStatus>('/api/revoke', { answer_id }),
+  setSelection: (approved_source_ids: string[]) =>
+    put<SelectionState>('/api/selection', { approved_source_ids }),
   speak: (answer_id: string) => post<SpeechState>('/api/speak', { answer_id }),
   stop: (activationId?: string | null) =>
     post<SpeechState>('/api/stop', activationId ? { activation_id: activationId } : {}),

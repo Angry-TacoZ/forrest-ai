@@ -140,6 +140,63 @@ describe('api client', () => {
     );
   });
 
+  it('approves an answer under the current selection', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ answer_id: 'ans-1', status: 'approved', revoked: false }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await api.approve('ans-1', ['resume-summary']);
+
+    expect(result.status).toBe('approved');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/approve',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          answer_id: 'ans-1',
+          approved_source_ids: ['resume-summary'],
+        }),
+      }),
+    );
+  });
+
+  it('revokes an answer approval', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ answer_id: 'ans-1', status: 'unapproved', revoked: true }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await api.revoke('ans-1');
+
+    expect(result.revoked).toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/revoke',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ answer_id: 'ans-1' }),
+      }),
+    );
+  });
+
+  it('syncs the source selection with PUT', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ approved_source_ids: ['project-latency'], epoch: 3 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await api.setSelection(['project-latency']);
+
+    expect(result.epoch).toBe(3);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/selection',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ approved_source_ids: ['project-latency'] }),
+      }),
+    );
+  });
+
   it('stops unconditionally without an activation id', async () => {
     const fetchMock = vi.fn().mockImplementation(() => jsonResponse({ status: 'idle' }));
     vi.stubGlobal('fetch', fetchMock);

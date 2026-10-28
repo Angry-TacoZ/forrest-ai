@@ -53,7 +53,7 @@ def resolve_output(args: argparse.Namespace) -> Path:
 
 
 def run_case(client: TestClient, case: dict) -> dict:
-    """Run transcribe -> retrieve -> answer for one case and score it."""
+    """Run transcribe -> retrieve -> answer -> approve -> speak and score it."""
     transcript = client.post("/api/transcribe", json={"scenario": case["scenario"]}).json()
     retrieved = client.post(
         "/api/retrieve",
@@ -77,10 +77,33 @@ def run_case(client: TestClient, case: dict) -> dict:
         )
     else:
         claims_ok = answer["claims"] == [] and answer["answer"] == ""
+    # No answer may be spoken without explicit, current, server-validated
+    # approval: speaking before approval is always forbidden.
+    unapproved_speak = client.post(
+        "/api/speak", json={"answer_id": answer["answer_id"]}
+    ).status_code
+    approval = client.post(
+        "/api/approve",
+        json={
+            "answer_id": answer["answer_id"],
+            "approved_source_ids": case["approved_source_ids"],
+        },
+    ).status_code
+    speak = client.post(
+        "/api/speak", json={"answer_id": answer["answer_id"]}
+    ).status_code
+    client.post("/api/stop", json={})
+    if expected["status"] == "grounded":
+        auth_ok = unapproved_speak == 403 and approval == 200 and speak == 200
+    else:
+        # Blocked answers are refused as unsupported before approval is even
+        # considered, so approval and speech both fail without authorizing.
+        auth_ok = unapproved_speak == 422 and approval == 422 and speak == 422
     passed = (
         answer["status"] == expected["status"]
         and len(retrieved["evidence"]) >= expected["min_evidence"]
         and claims_ok
+        and auth_ok
     )
     return {
         "id": case["id"],
@@ -90,6 +113,10 @@ def run_case(client: TestClient, case: dict) -> dict:
         "evidence_count": len(retrieved["evidence"]),
         "evidence_sources": [item["source_id"] for item in retrieved["evidence"]],
         "claims_ok": claims_ok,
+        "unapproved_speak_status": unapproved_speak,
+        "approval_status": approval,
+        "speak_status": speak,
+        "auth_ok": auth_ok,
         "pass": passed,
     }
 

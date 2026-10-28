@@ -118,6 +118,9 @@ interface FullApiOptions {
   speakGate?: Promise<Response>;
   speakResponses?: Promise<Response>[];
   stop?: () => Promise<Response>;
+  approve?: () => Promise<Response>;
+  revoke?: () => Promise<Response>;
+  selection?: () => Promise<Response>;
 }
 
 function stubFullApi(options: FullApiOptions = {}) {
@@ -170,6 +173,27 @@ function stubFullApi(options: FullApiOptions = {}) {
       }
       return jsonResponse(IDLE_SPEECH);
     }
+    if (url === '/api/approve') {
+      if (options.approve) {
+        return options.approve();
+      }
+      return jsonResponse({ answer_id: 'ans-1', status: 'approved', revoked: false });
+    }
+    if (url === '/api/revoke') {
+      if (options.revoke) {
+        return options.revoke();
+      }
+      return jsonResponse({ answer_id: 'ans-1', status: 'unapproved', revoked: true });
+    }
+    if (url === '/api/selection') {
+      if (options.selection) {
+        return options.selection();
+      }
+      return jsonResponse({
+        approved_source_ids: ['resume-summary', 'project-latency'],
+        epoch: 1,
+      });
+    }
     throw new Error(`unexpected request: ${url}`);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -189,7 +213,8 @@ async function driveToReady(props?: { activationTimeoutMs?: number }) {
   fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
   await screen.findByText(/Based on your approved materials/);
   fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
-  await screen.findByText('State: Ready for review');
+  // Approval is confirmed by the backend before the box checks.
+  await screen.findByRole('checkbox', { checked: true });
 }
 
 async function driveToSpeaking() {
@@ -328,6 +353,7 @@ describe('speech lifecycle guards', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
     await screen.findByText(/Based on your approved materials/);
     fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    await screen.findByRole('checkbox', { checked: true });
     fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     await screen.findByText('State: Idle');
@@ -698,5 +724,126 @@ describe('activation lifecycle', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
     expect(calls.filter(([url]) => url === '/api/stop')).toHaveLength(2);
+  });
+});
+
+describe('server-side approval', () => {
+  function requestBodies(fetchMock: { mock: { calls: unknown } }, url: string): unknown[] {
+    const calls = fetchMock.mock.calls as Array<[string, RequestInit]>;
+    return calls
+      .filter(([calledUrl]) => calledUrl === url)
+      .map(([, init]) => JSON.parse(init.body as string));
+  }
+
+  async function driveToDraft() {
+    await renderReadyApp();
+    fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
+    await screen.findByText(TRANSCRIPT_QUESTION);
+    fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
+    await screen.findByText(/Based on your approved materials/);
+  }
+
+  it('confirms approval with the backend under the current selection', async () => {
+    const fetchMock = stubFullApi();
+    await driveToDraft();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    await screen.findByRole('checkbox', { checked: true });
+
+    expect(requestBodies(fetchMock, '/api/approve')).toEqual([
+      {
+        answer_id: 'ans-1',
+        approved_source_ids: ['resume-summary', 'project-latency'],
+      },
+    ]);
+    expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeEnabled();
+  });
+
+  it('leaves the box unchecked when backend approval fails', async () => {
+    stubFullApi({ approve: () => Promise.reject(new Error('approval denied')) });
+    await driveToDraft();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('approval denied');
+    expect(screen.getByRole('checkbox', { name: /I reviewed this answer/ })).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeDisabled();
+  });
+
+  it('revokes server approval when the box is unchecked', async () => {
+    const fetchMock = stubFullApi();
+    await driveToReady();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    await screen.findByRole('checkbox', { checked: false });
+
+    expect(requestBodies(fetchMock, '/api/revoke')).toEqual([{ answer_id: 'ans-1' }]);
+    expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeDisabled();
+  });
+
+  it('keeps the box checked when revocation fails', async () => {
+    stubFullApi({ revoke: () => Promise.reject(new Error('revoke unreachable')) });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('revoke unreachable');
+    expect(screen.getByRole('checkbox', { name: /I reviewed this answer/ })).toBeChecked();
+    expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeEnabled();
+  });
+
+  it('syncs the selection before invalidating on a source toggle', async () => {
+    const fetchMock = stubFullApi();
+    await driveToReady();
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Exclude' }))[0]);
+    await screen.findByText('1 of 2 sources approved for retrieval.');
+
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    const selections = calls.filter(([url]) => url === '/api/selection');
+    expect(selections).toHaveLength(1);
+    expect(selections[0][1].method).toBe('PUT');
+    expect(JSON.parse(selections[0][1].body as string)).toEqual({
+      approved_source_ids: ['project-latency'],
+    });
+  });
+
+  it('aborts a source toggle when the selection sync fails', async () => {
+    stubFullApi({ selection: () => Promise.reject(new Error('selection unreachable')) });
+    await driveToReady();
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Exclude' }))[0]);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('selection unreachable');
+    expect(screen.getByText('2 of 2 sources approved for retrieval.')).toBeInTheDocument();
+    expect(screen.getByText(/Based on your approved materials/)).toBeInTheDocument();
+  });
+
+  it('revokes server approval when the session is reset', async () => {
+    const fetchMock = stubFullApi();
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    await screen.findByText('State: Idle');
+
+    expect(requestBodies(fetchMock, '/api/revoke')).toEqual([{ answer_id: 'ans-1' }]);
+  });
+
+  it('aborts a reset when revocation fails', async () => {
+    stubFullApi({ revoke: () => Promise.reject(new Error('revoke unreachable')) });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('revoke unreachable');
+    expect(screen.getByText('State: Ready for review')).toBeInTheDocument();
+    expect(screen.getByText(/Based on your approved materials/)).toBeInTheDocument();
+  });
+
+  it('unchecks approval when activation is refused as unauthorized', async () => {
+    stubFullApi({
+      speakResponses: [
+        Promise.resolve(jsonResponse({ detail: 'Answer approval was revoked.' }, 403)),
+      ],
+    });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Backend error 403');
+    expect(screen.getByRole('checkbox', { name: /I reviewed this answer/ })).not.toBeChecked();
+    expect(screen.getByText('State: Ready for review')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeDisabled();
   });
 });

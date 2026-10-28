@@ -1,7 +1,11 @@
 """Backend API tests: pipeline, approvals, blocking, and speech gating."""
 
+from datetime import UTC, datetime, timedelta
+
+import pytest
 from fastapi.testclient import TestClient
 
+from app import mocks
 from app.main import app
 
 client = TestClient(app)
@@ -122,6 +126,11 @@ def test_speak_and_stop_flow() -> None:
             "approved_source_ids": ALL_SOURCES,
         },
     ).json()
+    approved = client.post(
+        "/api/approve",
+        json={"answer_id": grounded["answer_id"], "approved_source_ids": ALL_SOURCES},
+    )
+    assert approved.json()["status"] == "approved"
     speaking = client.post("/api/speak", json={"answer_id": grounded["answer_id"]})
     assert speaking.json()["status"] == "speaking"
     assert speaking.json()["voice"] == "forrest-synthetic-v1"
@@ -256,8 +265,18 @@ def _grounded_answer_id() -> str:
     ).json()["answer_id"]
 
 
-def test_speak_issues_unique_activation_ids() -> None:
+def _approved_answer_id() -> str:
     answer_id = _grounded_answer_id()
+    response = client.post(
+        "/api/approve",
+        json={"answer_id": answer_id, "approved_source_ids": ALL_SOURCES},
+    )
+    assert response.status_code == 200
+    return answer_id
+
+
+def test_speak_issues_unique_activation_ids() -> None:
+    answer_id = _approved_answer_id()
     first = client.post("/api/speak", json={"answer_id": answer_id}).json()
     second = client.post("/api/speak", json={"answer_id": answer_id}).json()
     assert first["activation_id"] != second["activation_id"]
@@ -266,7 +285,7 @@ def test_speak_issues_unique_activation_ids() -> None:
 
 
 def test_stop_with_superseded_activation_id_is_ignored() -> None:
-    answer_id = _grounded_answer_id()
+    answer_id = _approved_answer_id()
     first = client.post("/api/speak", json={"answer_id": answer_id}).json()
     second = client.post("/api/speak", json={"answer_id": answer_id}).json()
     ignored = client.post("/api/stop", json={"activation_id": first["activation_id"]}).json()
@@ -276,7 +295,7 @@ def test_stop_with_superseded_activation_id_is_ignored() -> None:
 
 
 def test_stop_with_current_activation_id_stops() -> None:
-    answer_id = _grounded_answer_id()
+    answer_id = _approved_answer_id()
     current = client.post("/api/speak", json={"answer_id": answer_id}).json()
     stopped = client.post("/api/stop", json={"activation_id": current["activation_id"]}).json()
     assert stopped["status"] == "idle"
@@ -284,7 +303,7 @@ def test_stop_with_current_activation_id_stops() -> None:
 
 
 def test_stop_without_id_always_stops() -> None:
-    answer_id = _grounded_answer_id()
+    answer_id = _approved_answer_id()
     client.post("/api/speak", json={"answer_id": answer_id})
     assert client.post("/api/stop", json={}).json()["status"] == "idle"
     assert client.post("/api/stop", json={}).json()["status"] == "idle"
@@ -317,3 +336,98 @@ def test_keyword_bypass_question_is_blocked_end_to_end() -> None:
     ).json()
     assert blocked["status"] == "blocked"
     assert blocked["answer"] == ""
+
+
+def test_speak_rejects_unapproved_grounded_answer() -> None:
+    answer_id = _grounded_answer_id()
+    response = client.post("/api/speak", json={"answer_id": answer_id})
+    assert response.status_code == 403
+    assert "not been approved" in response.json()["detail"]
+
+
+def test_approve_rejects_unknown_answer() -> None:
+    response = client.post(
+        "/api/approve",
+        json={"answer_id": "ans-forged0002", "approved_source_ids": ALL_SOURCES},
+    )
+    assert response.status_code == 404
+
+
+def test_approve_rejects_blocked_answer() -> None:
+    blocked = client.post(
+        "/api/answer", json={"question": UNSUPPORTED, "evidence": []}
+    ).json()
+    response = client.post(
+        "/api/approve",
+        json={"answer_id": blocked["answer_id"], "approved_source_ids": ALL_SOURCES},
+    )
+    assert response.status_code == 422
+
+
+def test_approve_rejects_selection_missing_evidence_source() -> None:
+    answer_id = _grounded_answer_id()
+    response = client.post(
+        "/api/approve",
+        json={"answer_id": answer_id, "approved_source_ids": ["project-latency"]},
+    )
+    assert response.status_code == 422
+    assert "does not cover" in response.json()["detail"]
+    assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 403
+
+
+def test_revoked_answer_cannot_speak_until_reapproved() -> None:
+    answer_id = _approved_answer_id()
+    revoked = client.post("/api/revoke", json={"answer_id": answer_id})
+    assert revoked.json()["status"] == "unapproved"
+    assert revoked.json()["revoked"] is True
+    forbidden = client.post("/api/speak", json={"answer_id": answer_id})
+    assert forbidden.status_code == 403
+    assert "revoked" in forbidden.json()["detail"]
+    assert _approved_answer_id() == answer_id
+    assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 200
+    client.post("/api/stop", json={})
+
+
+def test_selection_change_stales_existing_approval() -> None:
+    answer_id = _approved_answer_id()
+    selection = client.put(
+        "/api/selection", json={"approved_source_ids": ["project-latency"]}
+    )
+    assert selection.status_code == 200
+    assert selection.json()["epoch"] >= 1
+    stale = client.post("/api/speak", json={"answer_id": answer_id})
+    assert stale.status_code == 403
+    assert "stale" in stale.json()["detail"]
+
+
+def test_regenerated_answer_requires_fresh_approval() -> None:
+    answer_id = _approved_answer_id()
+    assert _grounded_answer_id() == answer_id
+    assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 403
+
+
+def test_expired_approval_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    answer_id = _grounded_answer_id()
+    now = datetime.now(UTC)
+    monkeypatch.setattr(mocks, "_utcnow", lambda: now)
+    approved = client.post(
+        "/api/approve",
+        json={"answer_id": answer_id, "approved_source_ids": ALL_SOURCES},
+    )
+    assert approved.status_code == 200
+    monkeypatch.setattr(mocks, "_utcnow", lambda: now + timedelta(seconds=16 * 60))
+    expired = client.post("/api/speak", json={"answer_id": answer_id})
+    assert expired.status_code == 403
+    assert "expired" in expired.json()["detail"]
+
+
+def test_revoke_unknown_answer_is_not_found() -> None:
+    response = client.post("/api/revoke", json={"answer_id": "ans-forged0003"})
+    assert response.status_code == 404
+
+
+def test_revoke_is_idempotent() -> None:
+    answer_id = _approved_answer_id()
+    assert client.post("/api/revoke", json={"answer_id": answer_id}).status_code == 200
+    assert client.post("/api/revoke", json={"answer_id": answer_id}).status_code == 200
+    assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 403

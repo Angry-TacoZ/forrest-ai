@@ -7,8 +7,13 @@ from . import knowledge, mocks
 from .models import (
     AnswerRequest,
     AnswerResponse,
+    ApprovalStatus,
+    ApproveRequest,
     RetrieveRequest,
     RetrieveResponse,
+    RevokeRequest,
+    SelectionRequest,
+    SelectionState,
     SpeakRequest,
     SpeechState,
     StopRequest,
@@ -58,6 +63,30 @@ def post_answer(body: AnswerRequest) -> AnswerResponse:
     return mocks.generate_answer(body.question, evidence)
 
 
+@app.post("/api/approve")
+def post_approve(body: ApproveRequest) -> ApprovalStatus:
+    status, error = mocks.approve(body.answer_id, body.approved_source_ids)
+    if status == "unknown":
+        raise HTTPException(status_code=404, detail=error)
+    if status in ("refused", "mismatched"):
+        raise HTTPException(status_code=422, detail=error)
+    return ApprovalStatus(answer_id=body.answer_id, status="approved")
+
+
+@app.post("/api/revoke")
+def post_revoke(body: RevokeRequest) -> ApprovalStatus:
+    status, error = mocks.revoke(body.answer_id)
+    if status == "unknown":
+        raise HTTPException(status_code=404, detail=error)
+    return ApprovalStatus(answer_id=body.answer_id, status="unapproved", revoked=True)
+
+
+@app.put("/api/selection")
+def put_selection(body: SelectionRequest) -> SelectionState:
+    epoch = mocks.set_selection(body.approved_source_ids)
+    return SelectionState(approved_source_ids=sorted(body.approved_source_ids), epoch=epoch)
+
+
 @app.post("/api/speak")
 def post_speak(body: SpeakRequest) -> SpeechState:
     status, error, activation_id = mocks.speak(body.answer_id)
@@ -65,6 +94,8 @@ def post_speak(body: SpeakRequest) -> SpeechState:
         raise HTTPException(status_code=404, detail=error)
     if status == "refused":
         raise HTTPException(status_code=422, detail=error)
+    if status == "forbidden":
+        raise HTTPException(status_code=403, detail=error)
     return SpeechState(status="speaking", answer_id=body.answer_id, activation_id=activation_id)
 
 
