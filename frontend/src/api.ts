@@ -87,6 +87,26 @@ function post<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, { method: 'POST', body: JSON.stringify(body) });
 }
 
+export const ACTIVATION_TIMEOUT_MS = 15000;
+
+export async function activateSpeech(answerId: string, timeoutMs: number): Promise<SpeechState> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      api.speak(answerId),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error('Speech activation timed out.'));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export const api = {
   health: () =>
     request<{ status: string; service: string; version: string }>('/api/health'),

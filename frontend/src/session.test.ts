@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AnswerResponse, Evidence } from './api.ts';
 import {
   canActivate,
+  canInterrupt,
   initialSession,
   phaseLabel,
   sessionReducer,
@@ -68,7 +69,7 @@ describe('session reducer', () => {
     let state: SessionState = { ...initialSession, phase: 'ready', answer: grounded };
     state = sessionReducer(state, { type: 'approval:set', approved: true });
     state = sessionReducer(state, { type: 'speak:start' });
-    expect(state.phase).toBe('ready');
+    expect(state.phase).toBe('activating');
     state = sessionReducer(
       state,
       {
@@ -147,5 +148,83 @@ describe('session reducer', () => {
     expect(state.phase).toBe('speaking');
     expect(state.error).toBe('network down');
     expect(state.answer).toBe(grounded);
+  });
+
+  it('moves through activating on the way to speaking', () => {
+    const ready: SessionState = { ...initialSession, phase: 'ready', answer: grounded };
+    expect(canInterrupt(ready)).toBe(false);
+    const activating = sessionReducer(ready, { type: 'speak:start' });
+    expect(activating.phase).toBe('activating');
+    expect(canInterrupt(activating)).toBe(true);
+    expect(canActivate(activating)).toBe(false);
+    expect(phaseLabel('activating')).toBe('Starting speech');
+  });
+
+  it('returns a failed activation to ready when cleanup confirms idle', () => {
+    const activating: SessionState = {
+      ...initialSession,
+      phase: 'activating',
+      answer: grounded,
+      answerApproved: true,
+    };
+    const state = sessionReducer(
+      activating,
+      { type: 'activation:failed', error: 'Speech activation timed out.' },
+    );
+    expect(state.phase).toBe('ready');
+    expect(state.error).toBe('Speech activation timed out.');
+    expect(state.answer).toBe(grounded);
+    expect(canActivate(state)).toBe(true);
+  });
+
+  it('settles a stale activation only while still activating', () => {
+    const activating: SessionState = {
+      ...initialSession,
+      phase: 'activating',
+      answer: grounded,
+      error: 'network down',
+    };
+    const settled = sessionReducer(activating, { type: 'activation:settled' });
+    expect(settled.phase).toBe('ready');
+    expect(settled.error).toBeNull();
+    expect(settled.speech.status).toBe('idle');
+    expect(sessionReducer(initialSession, { type: 'activation:settled' })).toBe(initialSession);
+  });
+
+  it('raises the retry flag when cleanup fails after invalidation', () => {
+    const activating: SessionState = { ...initialSession, phase: 'activating' };
+    const covered = sessionReducer(
+      activating,
+      { type: 'activation:unconfirmed', error: 'network down' },
+    );
+    expect(covered.phase).toBe('activating');
+    expect(covered.stopUnconfirmed).toBe(false);
+
+    const reset = sessionReducer(
+      initialSession,
+      { type: 'activation:unconfirmed', error: 'network down' },
+    );
+    expect(reset.phase).toBe('idle');
+    expect(reset.error).toBe('network down');
+    expect(reset.stopUnconfirmed).toBe(true);
+  });
+
+  it('clears the retry flag when speech is confirmed stopped', () => {
+    const stranded: SessionState = {
+      ...initialSession,
+      error: 'network down',
+      stopUnconfirmed: true,
+    };
+    const confirmed = sessionReducer(stranded, { type: 'stop:confirmed' });
+    expect(confirmed.phase).toBe('idle');
+    expect(confirmed.error).toBeNull();
+    expect(confirmed.stopUnconfirmed).toBe(false);
+
+    const speaking: SessionState = {
+      ...initialSession,
+      phase: 'speaking',
+      stopUnconfirmed: true,
+    };
+    expect(sessionReducer(speaking, { type: 'stop:done' }).stopUnconfirmed).toBe(false);
   });
 });

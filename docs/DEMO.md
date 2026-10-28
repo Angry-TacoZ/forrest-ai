@@ -57,6 +57,9 @@ Open http://localhost:5173 in a browser.
   approval; in-flight requests from the older selection are discarded.
 - The backend re-validates evidence against server records: unknown, modified,
   excluded, or mismatched evidence is rejected and can never be spoken.
+- Activation runs through an explicit Starting speech state with Interrupt
+  available; ambiguous failures attempt backend cleanup and keep a retryable
+  stop until speech is confirmed stopped.
 
 ## Checks
 

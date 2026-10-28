@@ -73,6 +73,17 @@
   color: #7a1a14;
 }
 
+.error .retry {
+  margin-left: 10px;
+  padding: 4px 12px;
+  border: 1px solid #7a1a14;
+  border-radius: 5px;
+  background: #ffffff;
+  color: #7a1a14;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
 .grid {
   display: grid;
   grid-template-columns: 300px 1fr 300px;

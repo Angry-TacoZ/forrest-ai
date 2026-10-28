@@ -8,6 +8,7 @@ export type Phase =
   | 'verifying'
   | 'ready'
   | 'blocked'
+  | 'activating'
   | 'speaking'
   | 'error';
 
@@ -21,6 +22,7 @@ export interface SessionState {
   answerApproved: boolean;
   speech: SpeechState;
   spoken: boolean;
+  stopUnconfirmed: boolean;
   error: string | null;
 }
 
@@ -34,6 +36,7 @@ export const initialSession: SessionState = {
   answerApproved: false,
   speech: { status: 'idle', answer_id: null, voice: 'forrest-synthetic-v1' },
   spoken: false,
+  stopUnconfirmed: false,
   error: null,
 };
 
@@ -48,6 +51,10 @@ export type SessionAction =
   | { type: 'speak:done'; speech: SpeechState }
   | { type: 'stop:done' }
   | { type: 'stop:failed'; error: string }
+  | { type: 'stop:confirmed' }
+  | { type: 'activation:failed'; error: string }
+  | { type: 'activation:settled' }
+  | { type: 'activation:unconfirmed'; error: string }
   | { type: 'sources:changed' }
   | { type: 'fail'; error: string }
   | { type: 'reset' };
@@ -81,18 +88,55 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     case 'approval:set':
       return { ...state, answerApproved: action.approved };
     case 'speak:start':
-      return { ...state, error: null };
+      return { ...state, phase: 'activating', error: null };
     case 'speak:done':
-      return { ...state, phase: 'speaking', speech: action.speech, spoken: true };
+      return {
+        ...state,
+        phase: 'speaking',
+        speech: action.speech,
+        spoken: true,
+        stopUnconfirmed: false,
+      };
     case 'stop:done':
       return {
         ...state,
         phase: 'ready',
         speech: { ...state.speech, status: 'idle', answer_id: null },
+        stopUnconfirmed: false,
       };
     case 'stop:failed':
       // Keep the phase so the Interrupt control stays usable for a retry.
       return { ...state, error: action.error };
+    case 'stop:confirmed':
+      // A retry stop succeeded after the session had moved on: clear the
+      // flag without touching the current phase.
+      return { ...state, stopUnconfirmed: false, error: null };
+    case 'activation:failed':
+      // Speak failed but a confirmatory stop succeeded: the backend is idle,
+      // the answer is intact, and activation can be retried.
+      return { ...state, phase: 'ready', error: action.error };
+    case 'activation:settled':
+      // A late activation response arrived after invalidation and cleanup
+      // confirmed the backend idle. Only unwind a phase that is still
+      // waiting on activation; never revive reset or invalidated sessions.
+      if (state.phase !== 'activating') {
+        return state;
+      }
+      return {
+        ...state,
+        phase: 'ready',
+        speech: { ...state.speech, status: 'idle', answer_id: null },
+        error: null,
+      };
+    case 'activation:unconfirmed':
+      // Cleanup failed after invalidation: backend speech may be active. When
+      // no phase-level stop control covers the current phase, raise the flag
+      // that renders the retry control in the error banner.
+      return {
+        ...state,
+        error: action.error,
+        stopUnconfirmed: state.phase !== 'activating',
+      };
     case 'sources:changed':
       // Approval edits invalidate the draft, evidence, and candidate approval.
       // The question is kept so the candidate can re-draft under the new set.
@@ -105,6 +149,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         answerApproved: false,
         speech: { status: 'idle', answer_id: null, voice: state.speech.voice },
         spoken: false,
+        stopUnconfirmed: false,
         error: null,
       };
     case 'fail':
@@ -120,6 +165,10 @@ export function canActivate(state: SessionState): boolean {
     state.answer?.status === 'grounded' &&
     state.answerApproved
   );
+}
+
+export function canInterrupt(state: SessionState): boolean {
+  return state.phase === 'speaking' || state.phase === 'activating';
 }
 
 export function phaseLabel(phase: Phase): string {
@@ -138,6 +187,8 @@ export function phaseLabel(phase: Phase): string {
       return 'Ready for review';
     case 'blocked':
       return 'Answer blocked';
+    case 'activating':
+      return 'Starting speech';
     case 'speaking':
       return 'Speaking';
     case 'error':

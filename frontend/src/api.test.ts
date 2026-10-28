@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, api, errorMessage } from './api.ts';
+import { ApiError, activateSpeech, api, errorMessage } from './api.ts';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -60,6 +60,25 @@ describe('api client', () => {
     expect(errorMessage(new ApiError(500, 'boom'))).toBe('Backend error 500: boom');
     expect(errorMessage(new Error('plain'))).toBe('plain');
     expect(errorMessage('weird')).toBe('Unexpected error');
+  });
+
+  it('activates speech within the timeout', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({ status: 'speaking', answer_id: 'ans-1', voice: 'forrest-synthetic-v1' }),
+      ),
+    );
+
+    const speech = await activateSpeech('ans-1', 1000);
+
+    expect(speech.status).toBe('speaking');
+  });
+
+  it('rejects a lost activation response after the timeout', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise(() => {})));
+
+    await expect(activateSpeech('ans-1', 5)).rejects.toThrow('Speech activation timed out.');
   });
 
   it('sends the approval selection with answer requests', async () => {
