@@ -115,6 +115,7 @@ const IDLE_SPEECH = { status: 'idle', answer_id: null, voice: 'forrest-synthetic
 interface FullApiOptions {
   retrieveGate?: Promise<Response>;
   answerGate?: Promise<Response>;
+  speakGate?: Promise<Response>;
   stop?: () => Promise<Response>;
 }
 
@@ -148,6 +149,9 @@ function stubFullApi(options: FullApiOptions = {}) {
       return jsonResponse(GROUNDED_ANSWER);
     }
     if (url === '/api/speak') {
+      if (options.speakGate) {
+        return options.speakGate;
+      }
       return jsonResponse({
         status: 'speaking',
         answer_id: 'ans-1',
@@ -166,9 +170,15 @@ function stubFullApi(options: FullApiOptions = {}) {
   return fetchMock;
 }
 
-async function driveToSpeaking() {
+async function renderReadyApp() {
   render(<App />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Capture question' }));
+  // Never click Capture while it is still disabled during backend load.
+  await screen.findByText('Backend: online');
+}
+
+async function driveToSpeaking() {
+  await renderReadyApp();
+  fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
   await screen.findByText(TRANSCRIPT_QUESTION);
   fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
   await screen.findByText(/Based on your approved materials/);
@@ -191,8 +201,8 @@ describe('stale approval handling', () => {
       resolveRetrieve = resolve;
     });
     const fetchMock = stubFullApi({ retrieveGate });
-    render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Capture question' }));
+    await renderReadyApp();
+    fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
     await screen.findByText(TRANSCRIPT_QUESTION);
     fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
     await screen.findByText('State: Retrieving evidence');
@@ -212,8 +222,8 @@ describe('stale approval handling', () => {
       resolveAnswer = resolve;
     });
     stubFullApi({ answerGate });
-    render(<App />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Capture question' }));
+    await renderReadyApp();
+    fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
     await screen.findByText(TRANSCRIPT_QUESTION);
     fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
     await screen.findByText('State: Verifying answer');
@@ -282,5 +292,45 @@ describe('speech interruption', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Interrupt' }));
     await screen.findByText('State: Ready for review');
+  });
+});
+
+describe('speech lifecycle guards', () => {
+  it('disables new tasks while speaking', async () => {
+    stubFullApi();
+    await driveToSpeaking();
+
+    expect(screen.getByRole('button', { name: 'Capture question' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Draft answer' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Interrupt' })).toBeEnabled();
+  });
+
+  it('releases orphaned speech when reset lands during activation', async () => {
+    let resolveSpeak!: (response: Response) => void;
+    const speakGate = new Promise<Response>((resolve) => {
+      resolveSpeak = resolve;
+    });
+    const fetchMock = stubFullApi({ speakGate });
+    await renderReadyApp();
+    fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
+    await screen.findByText(TRANSCRIPT_QUESTION);
+    fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
+    await screen.findByText(/Based on your approved materials/);
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    await screen.findByText('State: Idle');
+    resolveSpeak(
+      jsonResponse({
+        status: 'speaking',
+        answer_id: 'ans-1',
+        voice: 'forrest-synthetic-v1',
+      }),
+    );
+    await flushAsyncWork(speakGate);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/stop', expect.anything());
+    expect(screen.getByText('State: Idle')).toBeInTheDocument();
+    expect(screen.queryByText(TRANSCRIPT_QUESTION)).not.toBeInTheDocument();
   });
 });

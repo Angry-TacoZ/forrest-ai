@@ -46,6 +46,9 @@ export default function App() {
 
   const approvedIds = sources.filter((source) => approved[source.id]).map((source) => source.id);
   const busy = BUSY_PHASES.includes(session.phase);
+  // Capture and Draft stay disabled while speaking: starting a new task must
+  // never strand backend speech without an interruption control.
+  const speaking = session.phase === 'speaking';
 
   const toggleSource = useCallback(
     async (id: string) => {
@@ -113,11 +116,25 @@ export default function App() {
     if (!session.answer) {
       return;
     }
+    const ticket = ticketRef.current;
     dispatch({ type: 'speak:start' });
     try {
       const speech = await api.speak(session.answer.answer_id);
+      if (ticket !== ticketRef.current) {
+        // Reset or invalidated while activating: release the orphaned backend
+        // speech instead of restoring a session the candidate already left.
+        try {
+          await api.stop();
+        } catch {
+          // Best effort: nothing left to restore either way.
+        }
+        return;
+      }
       dispatch({ type: 'speak:done', speech });
     } catch (error) {
+      if (ticket !== ticketRef.current) {
+        return;
+      }
       dispatch({ type: 'fail', error: errorMessage(error) });
     }
   }, [session.answer]);
@@ -232,10 +249,18 @@ export default function App() {
             </label>
           </fieldset>
           <div className="row">
-            <button type="button" onClick={capture} disabled={busy || backend !== 'online'}>
+            <button
+              type="button"
+              onClick={capture}
+              disabled={busy || backend !== 'online' || speaking}
+            >
               Capture question
             </button>
-            <button type="button" onClick={draft} disabled={session.question === '' || busy}>
+            <button
+              type="button"
+              onClick={draft}
+              disabled={session.question === '' || busy || speaking}
+            >
               Draft answer
             </button>
             <button
