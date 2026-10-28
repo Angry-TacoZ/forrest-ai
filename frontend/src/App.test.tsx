@@ -601,4 +601,62 @@ describe('activation lifecycle', () => {
       expect(screen.queryByRole('alert')).toBeNull();
     });
   });
+
+  it('ignores a stale rejection once a newer activation owns speech', async () => {
+    const { gate: firstGate, reject: rejectFirst } = deferredResponse();
+    const secondResponse = jsonResponse({
+      status: 'speaking',
+      answer_id: 'ans-1',
+      voice: 'forrest-synthetic-v1',
+      activation_id: 'spk-0002',
+    });
+    const fetchMock = stubFullApi({ speakResponses: [firstGate, Promise.resolve(secondResponse)] });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Starting speech');
+    fireEvent.click(screen.getByRole('button', { name: 'Interrupt' }));
+    await screen.findByText('State: Ready for review');
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Speaking');
+    rejectFirst(new Error('old request failed'));
+    await act(async () => {
+      await firstGate.catch(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.filter(([url]) => url === '/api/stop')).toHaveLength(1);
+    expect(screen.getByText('State: Speaking')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('keeps the retry control visible when a new draft starts', async () => {
+    const { gate: speakGate, resolve } = deferredResponse();
+    let stopCalls = 0;
+    stubFullApi({
+      speakGate,
+      stop: async () => {
+        stopCalls += 1;
+        if (stopCalls === 2) {
+          return Promise.reject(new Error('cleanup unreachable'));
+        }
+        return jsonResponse(IDLE_SPEECH);
+      },
+    });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Starting speech');
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    await screen.findByText('State: Idle');
+    resolve(jsonResponse(SPEAKING));
+    await flushAsyncWork(speakGate);
+
+    expect(await screen.findByRole('button', { name: 'Retry stop' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
+    await screen.findByText(TRANSCRIPT_QUESTION);
+    fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
+    await screen.findByText(/Based on your approved materials/);
+    expect(screen.getByRole('button', { name: 'Retry stop' })).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('cleanup unreachable');
+  });
 });

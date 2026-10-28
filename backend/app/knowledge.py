@@ -64,6 +64,10 @@ _STOPWORDS = frozenset(
     }
 )
 
+# Minimum shared content tokens for a mock retrieval hit. A single shared
+# word is not grounding (production retrieval must be semantic).
+_MIN_OVERLAP = 2
+
 
 def list_sources() -> list[dict[str, object]]:
     """Return all knowledge sources (candidate toggles approval in the UI)."""
@@ -89,7 +93,7 @@ def retrieve(
         if source_id not in approved:
             continue
         overlap = len(question_tokens & _tokens(text))
-        if overlap > 0:
+        if overlap >= _MIN_OVERLAP:
             scored.append((overlap, index, source_id, text))
     scored.sort(key=lambda item: (-item[0], item[1]))
     titles = {str(source["id"]): str(source["title"]) for source in SOURCES}

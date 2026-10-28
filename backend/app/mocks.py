@@ -11,7 +11,7 @@ ENGINE_GENERATE = "mock-generate-v1"
 VOICE_ID = "forrest-synthetic-v1"
 
 QUESTIONS = {
-    "supported": "Tell me about your backend experience with checkout systems.",
+    "supported": "Tell me about your backend experience with checkout latency.",
     "unsupported": "Are you able to perform pediatric neurosurgery?",
 }
 

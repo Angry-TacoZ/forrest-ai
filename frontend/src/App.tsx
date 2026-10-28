@@ -164,8 +164,8 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
     const ticket = ticketRef.current;
     const epoch = ++epochRef.current;
     // Release one specific orphaned activation: the id-scoped stop cannot
-    // touch newer speech, and the settled transition is skipped when a
-    // newer activation already owns the phase.
+    // touch newer speech, and settled/unconfirmed transitions are skipped
+    // when a newer activation already owns backend state.
     const releaseActivation = (activationId: string | null) => {
       void (async () => {
         try {
@@ -174,6 +174,9 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
             dispatch({ type: 'activation:settled' });
           }
         } catch (error) {
+          if (epoch !== epochRef.current) {
+            return;
+          }
           dispatch({ type: 'activation:unconfirmed', error: errorMessage(error) });
         }
       })();
@@ -191,11 +194,15 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
       }
       dispatch({ type: 'speak:done', speech });
     } catch (error) {
+      if (epoch !== epochRef.current) {
+        // A newer activation owns backend state; this failure must not
+        // touch it (no stop, no ticket bump, no state transition).
+        return;
+      }
       // Ambiguous failure: the backend may have started speech even though
-      // the request failed or timed out. Invalidate first so a late success
-      // can only clean up, never start speech behind our back.
+      // the request failed or timed out. Late successes are contained by
+      // the timeout hook's id-scoped cleanup instead of a ticket bump.
       const stale = ticket !== ticketRef.current;
-      ticketRef.current += 1;
       try {
         await api.stop();
         dispatch(

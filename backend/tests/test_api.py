@@ -6,7 +6,7 @@ from app.main import app
 
 client = TestClient(app)
 
-SUPPORTED = "Tell me about your backend experience with checkout systems."
+SUPPORTED = "Tell me about your backend experience with checkout latency."
 UNSUPPORTED = "Are you able to perform pediatric neurosurgery?"
 ALL_SOURCES = ["resume-summary", "project-latency", "cert-aws"]
 
@@ -288,3 +288,32 @@ def test_stop_without_id_always_stops() -> None:
     client.post("/api/speak", json={"answer_id": answer_id})
     assert client.post("/api/stop", json={}).json()["status"] == "idle"
     assert client.post("/api/stop", json={}).json()["status"] == "idle"
+
+
+def test_single_keyword_overlap_is_not_grounding() -> None:
+    response = client.post(
+        "/api/retrieve",
+        json={
+            "question": "Can you perform neurosurgery using Python?",
+            "approved_source_ids": ALL_SOURCES,
+        },
+    )
+    assert response.json()["evidence"] == []
+
+
+def test_keyword_bypass_question_is_blocked_end_to_end() -> None:
+    question = "Can you perform neurosurgery using Python?"
+    retrieved = client.post(
+        "/api/retrieve",
+        json={"question": question, "approved_source_ids": ALL_SOURCES},
+    ).json()["evidence"]
+    blocked = client.post(
+        "/api/answer",
+        json={
+            "question": question,
+            "evidence": retrieved,
+            "approved_source_ids": ALL_SOURCES,
+        },
+    ).json()
+    assert blocked["status"] == "blocked"
+    assert blocked["answer"] == ""

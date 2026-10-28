@@ -1,5 +1,6 @@
 {
   "suite": "interview-v1",
+  "role": "baseline",
   "engines": {
     "transcribe": "mock-transcribe-v1",
     "generate": "mock-generate-v1"
@@ -7,7 +8,7 @@
   "cases": [
     {
       "id": "supported-full-approval",
-      "question": "Tell me about your backend experience with checkout systems.",
+      "question": "Tell me about your backend experience with checkout latency.",
       "expected_status": "grounded",
       "actual_status": "grounded",
       "evidence_count": 2,
@@ -20,7 +21,7 @@
     },
     {
       "id": "supported-partial-approval",
-      "question": "Tell me about your backend experience with checkout systems.",
+      "question": "Tell me about your backend experience with checkout latency.",
       "expected_status": "grounded",
       "actual_status": "grounded",
       "evidence_count": 1,

@@ -289,4 +289,56 @@ describe('session reducer', () => {
     expect(state.stopUnconfirmed).toBe(false);
     expect(state.error).toBe('network down');
   });
+
+  it('keeps the retry error visible when new work starts', () => {
+    const stranded: SessionState = {
+      ...initialSession,
+      phase: 'transcribed',
+      question: 'Q?',
+      error: 'cleanup unreachable',
+      stopUnconfirmed: true,
+    };
+    const drafting = sessionReducer(stranded, { type: 'draft:start' });
+    expect(drafting.phase).toBe('retrieving');
+    expect(drafting.error).toBe('cleanup unreachable');
+    expect(drafting.stopUnconfirmed).toBe(true);
+
+    const ready: SessionState = { ...stranded, phase: 'ready', answer: grounded };
+    const activating = sessionReducer(ready, { type: 'speak:start' });
+    expect(activating.error).toBe('cleanup unreachable');
+    expect(activating.stopUnconfirmed).toBe(true);
+  });
+
+  it('clears ordinary errors when new work starts', () => {
+    const failed: SessionState = { ...initialSession, phase: 'error', error: 'boom' };
+    expect(sessionReducer(failed, { type: 'draft:start' }).error).toBeNull();
+  });
+
+  it('clears errors when speech reaches a confirmed state', () => {
+    const activating: SessionState = {
+      ...initialSession,
+      phase: 'activating',
+      error: 'cleanup unreachable',
+      stopUnconfirmed: true,
+    };
+    const speaking = sessionReducer(
+      activating,
+      {
+        type: 'speak:done',
+        speech: {
+          status: 'speaking',
+          answer_id: 'ans-1',
+          voice: 'forrest-synthetic-v1',
+          activation_id: 'spk-0001',
+        },
+      },
+    );
+    expect(speaking.error).toBeNull();
+    expect(speaking.stopUnconfirmed).toBe(false);
+
+    const stopped = sessionReducer(activating, { type: 'stop:done' });
+    expect(stopped.phase).toBe('ready');
+    expect(stopped.error).toBeNull();
+    expect(stopped.stopUnconfirmed).toBe(false);
+  });
 });

@@ -83,7 +83,11 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     case 'capture:done':
       return { ...state, phase: 'transcribed', question: action.question };
     case 'draft:start':
-      return { ...state, phase: 'retrieving', error: null };
+      return {
+        ...state,
+        phase: 'retrieving',
+        error: state.stopUnconfirmed ? state.error : null,
+      };
     case 'draft:evidence':
       return {
         ...state,
@@ -101,7 +105,11 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     case 'approval:set':
       return { ...state, answerApproved: action.approved };
     case 'speak:start':
-      return { ...state, phase: 'activating', error: null };
+      return {
+        ...state,
+        phase: 'activating',
+        error: state.stopUnconfirmed ? state.error : null,
+      };
     case 'speak:done':
       return {
         ...state,
@@ -109,6 +117,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         speech: action.speech,
         spoken: true,
         stopUnconfirmed: false,
+        error: null,
       };
     case 'stop:done':
       return {
@@ -116,6 +125,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         phase: 'ready',
         speech: { ...state.speech, status: 'idle', answer_id: null, activation_id: null },
         stopUnconfirmed: false,
+        error: null,
       };
     case 'stop:failed':
       // Keep the phase so the Interrupt control stays usable for a retry.
