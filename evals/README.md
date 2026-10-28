@@ -32,3 +32,17 @@ backend\.venv\Scripts\python evals/run.py
 ```
 
 The `eval` CI job runs the same command on every push and pull request.
+
+## Baseline discipline
+
+`results/interview-v1.json` is the committed baseline and is never overwritten
+by a normal run: fresh output goes to the gitignored
+`results/interview-v1-candidate.json`, which the runner compares against the
+baseline (any drift fails the run). Refresh the baseline explicitly after
+reviewing a candidate diff:
+
+```text
+backend\.venv\Scripts\python evals/run.py --update-baseline
+```
+
+A custom candidate path is available via `--output PATH`.

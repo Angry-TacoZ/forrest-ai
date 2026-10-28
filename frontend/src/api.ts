@@ -44,6 +44,7 @@ export interface SpeechState {
   status: 'idle' | 'speaking';
   answer_id: string | null;
   voice: string;
+  activation_id: string | null;
 }
 
 export class ApiError extends Error {
@@ -136,6 +137,7 @@ export const api = {
   answer: (question: string, evidence: Evidence[], approved_source_ids: string[]) =>
     post<AnswerResponse>('/api/answer', { question, evidence, approved_source_ids }),
   speak: (answer_id: string) => post<SpeechState>('/api/speak', { answer_id }),
-  stop: () => post<SpeechState>('/api/stop', {}),
+  stop: (activationId?: string | null) =>
+    post<SpeechState>('/api/stop', activationId ? { activation_id: activationId } : {}),
   speech: () => request<SpeechState>('/api/speech'),
 };

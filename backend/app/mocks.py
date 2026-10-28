@@ -16,7 +16,8 @@ QUESTIONS = {
 }
 
 _answer_registry: dict[str, str] = {}  # answer_id -> "grounded" | "blocked"
-_speech: dict[str, str | None] = {"status": "idle", "answer_id": None}
+_speech: dict[str, str | None] = {"status": "idle", "answer_id": None, "activation_id": None}
+_activation_seq = 0
 
 
 def transcribe(scenario: str) -> Transcript:
@@ -53,22 +54,34 @@ def generate_answer(question: str, evidence: list[Evidence]) -> AnswerResponse:
     )
 
 
-def speak(answer_id: str) -> tuple[str, str | None]:
-    """Start mock speech. Returns (status, error); blocked answers are refused."""
+def speak(answer_id: str) -> tuple[str, str | None, str | None]:
+    """Start mock speech. Returns (status, error, activation_id)."""
     status = _answer_registry.get(answer_id)
     if status is None:
-        return "unknown", f"Unknown answer id: {answer_id}."
+        return "unknown", f"Unknown answer id: {answer_id}.", None
     if status != "grounded":
-        return "refused", "Refusing to speak: this answer is blocked as unsupported."
+        return "refused", "Refusing to speak: this answer is blocked as unsupported.", None
+    global _activation_seq
+    _activation_seq += 1
+    activation_id = f"spk-{_activation_seq:04d}"
     _speech["status"] = "speaking"
     _speech["answer_id"] = answer_id
-    return "speaking", None
+    _speech["activation_id"] = activation_id
+    return "speaking", None, activation_id
 
 
-def stop() -> None:
-    """Interrupt mock speech immediately."""
+def stop(activation_id: str | None = None) -> bool:
+    """Interrupt mock speech. With an id, only that activation is stopped.
+
+    Returns True when the stop applied (or speech was already idle without
+    a selector), False when it named a superseded activation.
+    """
+    if activation_id is not None and activation_id != _speech["activation_id"]:
+        return False
     _speech["status"] = "idle"
     _speech["answer_id"] = None
+    _speech["activation_id"] = None
+    return True
 
 
 def speech_state() -> dict[str, str | None]:

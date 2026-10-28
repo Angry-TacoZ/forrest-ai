@@ -29,6 +29,9 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
   // stale data. Every stop-initiating action claims a ticket first so a
   // superseded stop never overwrites a newer transition.
   const ticketRef = useRef(0);
+  // Monotonic activation counter: stale cleanup skips its settled
+  // transition when a newer activation already owns the phase.
+  const epochRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -159,34 +162,31 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
       return;
     }
     const ticket = ticketRef.current;
-    dispatch({ type: 'speak:start' });
-    const releaseLateSpeech = () => {
-      // A timed-out request that eventually succeeds must release the
-      // orphaned backend speech, never restore a session we already left.
+    const epoch = ++epochRef.current;
+    // Release one specific orphaned activation: the id-scoped stop cannot
+    // touch newer speech, and the settled transition is skipped when a
+    // newer activation already owns the phase.
+    const releaseActivation = (activationId: string | null) => {
       void (async () => {
         try {
-          await api.stop();
-          dispatch({ type: 'activation:settled' });
+          await api.stop(activationId);
+          if (epoch === epochRef.current) {
+            dispatch({ type: 'activation:settled' });
+          }
         } catch (error) {
           dispatch({ type: 'activation:unconfirmed', error: errorMessage(error) });
         }
       })();
     };
+    dispatch({ type: 'speak:start' });
     try {
-      const speech = await activateSpeech(
-        session.answer.answer_id,
-        activationTimeoutMs,
-        releaseLateSpeech,
+      const speech = await activateSpeech(session.answer.answer_id, activationTimeoutMs, (late) =>
+        releaseActivation(late.activation_id),
       );
       if (ticket !== ticketRef.current) {
         // Reset or invalidated while activating: release the orphaned backend
         // speech instead of restoring a session the candidate already left.
-        try {
-          await api.stop();
-          dispatch({ type: 'activation:settled' });
-        } catch (error) {
-          dispatch({ type: 'activation:unconfirmed', error: errorMessage(error) });
-        }
+        releaseActivation(speech.activation_id);
         return;
       }
       dispatch({ type: 'speak:done', speech });

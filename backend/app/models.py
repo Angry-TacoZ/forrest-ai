@@ -62,7 +62,12 @@ class SpeakRequest(BaseModel):
     answer_id: str
 
 
+class StopRequest(BaseModel):
+    activation_id: str | None = None
+
+
 class SpeechState(BaseModel):
     status: str  # "idle" | "speaking"
     answer_id: str | None = None
     voice: str = "forrest-synthetic-v1"
+    activation_id: str | None = None

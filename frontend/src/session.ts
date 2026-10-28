@@ -34,7 +34,7 @@ export const initialSession: SessionState = {
   searchedSources: 0,
   answer: null,
   answerApproved: false,
-  speech: { status: 'idle', answer_id: null, voice: 'forrest-synthetic-v1' },
+  speech: { status: 'idle', answer_id: null, voice: 'forrest-synthetic-v1', activation_id: null },
   spoken: false,
   stopUnconfirmed: false,
   error: null,
@@ -59,14 +59,27 @@ export type SessionAction =
   | { type: 'fail'; error: string }
   | { type: 'reset' };
 
+// An unconfirmed stop means backend speech may still be active. Fresh
+// lifecycle transitions preserve that flag and its error so the candidate
+// never loses the retry control by starting new work.
+function preserveUnconfirmedStop<T extends SessionState>(next: T, current: SessionState): T {
+  if (!current.stopUnconfirmed) {
+    return next;
+  }
+  return { ...next, stopUnconfirmed: true, error: current.error };
+}
+
 export function sessionReducer(state: SessionState, action: SessionAction): SessionState {
   switch (action.type) {
     case 'capture:start':
-      return {
-        ...initialSession,
-        phase: 'transcribing',
-        scenario: action.scenario,
-      };
+      return preserveUnconfirmedStop(
+        {
+          ...initialSession,
+          phase: 'transcribing',
+          scenario: action.scenario,
+        },
+        state,
+      );
     case 'capture:done':
       return { ...state, phase: 'transcribed', question: action.question };
     case 'draft:start':
@@ -101,7 +114,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       return {
         ...state,
         phase: 'ready',
-        speech: { ...state.speech, status: 'idle', answer_id: null },
+        speech: { ...state.speech, status: 'idle', answer_id: null, activation_id: null },
         stopUnconfirmed: false,
       };
     case 'stop:failed':
@@ -114,7 +127,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     case 'activation:failed':
       // Speak failed but a confirmatory stop succeeded: the backend is idle,
       // the answer is intact, and activation can be retried.
-      return { ...state, phase: 'ready', error: action.error };
+      return { ...state, phase: 'ready', stopUnconfirmed: false, error: action.error };
     case 'activation:settled':
       // A late activation response arrived after invalidation and cleanup
       // confirmed the backend idle. Only unwind a phase that is still
@@ -125,7 +138,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       return {
         ...state,
         phase: 'ready',
-        speech: { ...state.speech, status: 'idle', answer_id: null },
+        speech: { ...state.speech, status: 'idle', answer_id: null, activation_id: null },
+        stopUnconfirmed: false,
         error: null,
       };
     case 'activation:unconfirmed':
@@ -135,27 +149,30 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       return {
         ...state,
         error: action.error,
-        stopUnconfirmed: state.phase !== 'activating',
+        stopUnconfirmed: state.phase !== 'activating' && state.phase !== 'speaking',
       };
     case 'sources:changed':
       // Approval edits invalidate the draft, evidence, and candidate approval.
       // The question is kept so the candidate can re-draft under the new set.
-      return {
-        ...state,
-        phase: state.question === '' ? 'idle' : 'transcribed',
-        evidence: [],
-        searchedSources: 0,
-        answer: null,
-        answerApproved: false,
-        speech: { status: 'idle', answer_id: null, voice: state.speech.voice },
-        spoken: false,
-        stopUnconfirmed: false,
-        error: null,
-      };
+      return preserveUnconfirmedStop(
+        {
+          ...state,
+          phase: state.question === '' ? 'idle' : 'transcribed',
+          evidence: [],
+          searchedSources: 0,
+          answer: null,
+          answerApproved: false,
+          speech: { status: 'idle', answer_id: null, voice: state.speech.voice, activation_id: null },
+          spoken: false,
+          stopUnconfirmed: false,
+          error: null,
+        },
+        state,
+      );
     case 'fail':
       return { ...state, phase: 'error', error: action.error };
     case 'reset':
-      return initialSession;
+      return preserveUnconfirmedStop(initialSession, state);
   }
 }
 

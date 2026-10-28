@@ -240,3 +240,51 @@ def test_rejected_evidence_is_never_registered_as_speakable() -> None:
     assert "answer_id" not in fabricated.json()
     unknown = client.post("/api/speak", json={"answer_id": "ans-forged0001"})
     assert unknown.status_code == 404
+
+
+def _grounded_answer_id() -> str:
+    evidence = client.post(
+        "/api/retrieve", json={"question": SUPPORTED, "approved_source_ids": ALL_SOURCES}
+    ).json()["evidence"]
+    return client.post(
+        "/api/answer",
+        json={
+            "question": SUPPORTED,
+            "evidence": evidence,
+            "approved_source_ids": ALL_SOURCES,
+        },
+    ).json()["answer_id"]
+
+
+def test_speak_issues_unique_activation_ids() -> None:
+    answer_id = _grounded_answer_id()
+    first = client.post("/api/speak", json={"answer_id": answer_id}).json()
+    second = client.post("/api/speak", json={"answer_id": answer_id}).json()
+    assert first["activation_id"] != second["activation_id"]
+    assert first["activation_id"].startswith("spk-")
+    client.post("/api/stop", json={})
+
+
+def test_stop_with_superseded_activation_id_is_ignored() -> None:
+    answer_id = _grounded_answer_id()
+    first = client.post("/api/speak", json={"answer_id": answer_id}).json()
+    second = client.post("/api/speak", json={"answer_id": answer_id}).json()
+    ignored = client.post("/api/stop", json={"activation_id": first["activation_id"]}).json()
+    assert ignored["status"] == "speaking"
+    assert ignored["activation_id"] == second["activation_id"]
+    client.post("/api/stop", json={})
+
+
+def test_stop_with_current_activation_id_stops() -> None:
+    answer_id = _grounded_answer_id()
+    current = client.post("/api/speak", json={"answer_id": answer_id}).json()
+    stopped = client.post("/api/stop", json={"activation_id": current["activation_id"]}).json()
+    assert stopped["status"] == "idle"
+    assert stopped["activation_id"] is None
+
+
+def test_stop_without_id_always_stops() -> None:
+    answer_id = _grounded_answer_id()
+    client.post("/api/speak", json={"answer_id": answer_id})
+    assert client.post("/api/stop", json={}).json()["status"] == "idle"
+    assert client.post("/api/stop", json={}).json()["status"] == "idle"

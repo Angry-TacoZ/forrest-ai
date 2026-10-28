@@ -74,7 +74,12 @@ describe('session reducer', () => {
       state,
       {
         type: 'speak:done',
-        speech: { status: 'speaking', answer_id: 'ans-grounded', voice: 'forrest-synthetic-v1' },
+        speech: {
+          status: 'speaking',
+          answer_id: 'ans-grounded',
+          voice: 'forrest-synthetic-v1',
+          activation_id: 'spk-0001',
+        },
       },
     );
     expect(state.phase).toBe('speaking');
@@ -129,7 +134,12 @@ describe('session reducer', () => {
       phase: 'speaking',
       question: 'Q?',
       answer: grounded,
-      speech: { status: 'speaking', answer_id: 'ans-grounded', voice: 'forrest-synthetic-v1' },
+      speech: {
+        status: 'speaking',
+        answer_id: 'ans-grounded',
+        voice: 'forrest-synthetic-v1',
+        activation_id: 'spk-0001',
+      },
     };
     const state = sessionReducer(speaking, { type: 'sources:changed' });
     expect(state.phase).toBe('transcribed');
@@ -226,5 +236,57 @@ describe('session reducer', () => {
       stopUnconfirmed: true,
     };
     expect(sessionReducer(speaking, { type: 'stop:done' }).stopUnconfirmed).toBe(false);
+  });
+
+  it('preserves an unconfirmed stop across new work', () => {
+    const stranded: SessionState = {
+      ...initialSession,
+      error: 'cleanup unreachable',
+      stopUnconfirmed: true,
+    };
+    for (const action of [
+      { type: 'capture:start', scenario: 'supported' },
+      { type: 'sources:changed' },
+      { type: 'reset' },
+    ] as const) {
+      const next = sessionReducer(stranded, action);
+      expect(next.stopUnconfirmed).toBe(true);
+      expect(next.error).toBe('cleanup unreachable');
+    }
+    expect(sessionReducer(stranded, { type: 'capture:start', scenario: 'supported' }).phase).toBe(
+      'transcribing',
+    );
+  });
+
+  it('clears fresh sessions without touching a clean slate', () => {
+    const reset = sessionReducer(initialSession, { type: 'reset' });
+    expect(reset).toBe(initialSession);
+    const captured = sessionReducer(initialSession, { type: 'capture:start', scenario: 'supported' });
+    expect(captured.stopUnconfirmed).toBe(false);
+    expect(captured.error).toBeNull();
+  });
+
+  it('clears the retry flag once cleanup confirms idle', () => {
+    const stranded: SessionState = {
+      ...initialSession,
+      phase: 'ready',
+      answer: grounded,
+      error: 'cleanup unreachable',
+      stopUnconfirmed: true,
+    };
+    const failed = sessionReducer(stranded, { type: 'activation:failed', error: 'speak boom' });
+    expect(failed.stopUnconfirmed).toBe(false);
+    expect(failed.error).toBe('speak boom');
+  });
+
+  it('raises no retry flag when a phase-level control already covers speech', () => {
+    const speaking: SessionState = { ...initialSession, phase: 'speaking' };
+    const state = sessionReducer(
+      speaking,
+      { type: 'activation:unconfirmed', error: 'network down' },
+    );
+    expect(state.phase).toBe('speaking');
+    expect(state.stopUnconfirmed).toBe(false);
+    expect(state.error).toBe('network down');
   });
 });

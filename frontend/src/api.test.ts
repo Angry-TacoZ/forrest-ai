@@ -124,4 +124,33 @@ describe('api client', () => {
       }),
     );
   });
+
+  it('scopes a stop to one activation when an id is given', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 'speaking' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.stop('spk-0001');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/stop',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ activation_id: 'spk-0001' }),
+      }),
+    );
+  });
+
+  it('stops unconditionally without an activation id', async () => {
+    const fetchMock = vi.fn().mockImplementation(() => jsonResponse({ status: 'idle' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.stop();
+    await api.stop(null);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/stop',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({}) }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });

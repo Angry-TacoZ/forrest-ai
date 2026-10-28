@@ -11,6 +11,7 @@ from .models import (
     RetrieveResponse,
     SpeakRequest,
     SpeechState,
+    StopRequest,
     TranscribeRequest,
     Transcript,
 )
@@ -59,25 +60,32 @@ def post_answer(body: AnswerRequest) -> AnswerResponse:
 
 @app.post("/api/speak")
 def post_speak(body: SpeakRequest) -> SpeechState:
-    status, error = mocks.speak(body.answer_id)
+    status, error, activation_id = mocks.speak(body.answer_id)
     if status == "unknown":
         raise HTTPException(status_code=404, detail=error)
     if status == "refused":
         raise HTTPException(status_code=422, detail=error)
-    return SpeechState(status="speaking", answer_id=body.answer_id)
+    return SpeechState(status="speaking", answer_id=body.answer_id, activation_id=activation_id)
+
+
+def _current_speech() -> SpeechState:
+    state = mocks.speech_state()
+    status = state["status"]
+    answer_id = state["answer_id"]
+    activation_id = state["activation_id"]
+    assert isinstance(status, str)
+    assert answer_id is None or isinstance(answer_id, str)
+    assert activation_id is None or isinstance(activation_id, str)
+    return SpeechState(status=status, answer_id=answer_id, activation_id=activation_id)
 
 
 @app.post("/api/stop")
-def post_stop() -> SpeechState:
-    mocks.stop()
-    return SpeechState(status="idle")
+def post_stop(body: StopRequest | None = None) -> SpeechState:
+    activation_id = body.activation_id if body is not None else None
+    mocks.stop(activation_id)
+    return _current_speech()
 
 
 @app.get("/api/speech")
 def get_speech() -> SpeechState:
-    state = mocks.speech_state()
-    status = state["status"]
-    answer_id = state["answer_id"]
-    assert isinstance(status, str)
-    assert answer_id is None or isinstance(answer_id, str)
-    return SpeechState(status=status, answer_id=answer_id)
+    return _current_speech()
