@@ -74,7 +74,14 @@ def test_answer_is_grounded_with_sourced_claims() -> None:
     evidence = client.post(
         "/api/retrieve", json={"question": SUPPORTED, "approved_source_ids": ALL_SOURCES}
     ).json()["evidence"]
-    response = client.post("/api/answer", json={"question": SUPPORTED, "evidence": evidence})
+    response = client.post(
+        "/api/answer",
+        json={
+            "question": SUPPORTED,
+            "evidence": evidence,
+            "approved_source_ids": ALL_SOURCES,
+        },
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "grounded"
@@ -108,7 +115,12 @@ def test_speak_and_stop_flow() -> None:
         "/api/retrieve", json={"question": SUPPORTED, "approved_source_ids": ALL_SOURCES}
     ).json()["evidence"]
     grounded = client.post(
-        "/api/answer", json={"question": SUPPORTED, "evidence": evidence}
+        "/api/answer",
+        json={
+            "question": SUPPORTED,
+            "evidence": evidence,
+            "approved_source_ids": ALL_SOURCES,
+        },
     ).json()
     speaking = client.post("/api/speak", json={"answer_id": grounded["answer_id"]})
     assert speaking.json()["status"] == "speaking"
@@ -117,3 +129,114 @@ def test_speak_and_stop_flow() -> None:
     stopped = client.post("/api/stop")
     assert stopped.json()["status"] == "idle"
     assert client.get("/api/speech").json()["answer_id"] is None
+
+
+def test_answer_rejects_fabricated_excerpt() -> None:
+    response = client.post(
+        "/api/answer",
+        json={
+            "question": UNSUPPORTED,
+            "evidence": [
+                {
+                    "source_id": "resume-summary",
+                    "source_title": "Resume summary (fictional)",
+                    "excerpt": (
+                        "Alex Rivera completed a neurosurgery residency at "
+                        "Harvard Medical School and holds a board "
+                        "certification in pediatric neurosurgery."
+                    ),
+                    "relevance": 1.0,
+                }
+            ],
+            "approved_source_ids": ALL_SOURCES,
+        },
+    )
+    assert response.status_code == 422
+    assert "does not match server records" in response.json()["detail"]
+
+
+def test_answer_rejects_unknown_source() -> None:
+    response = client.post(
+        "/api/answer",
+        json={
+            "question": SUPPORTED,
+            "evidence": [
+                {
+                    "source_id": "harvard-transcript",
+                    "source_title": "Harvard transcript (fabricated)",
+                    "excerpt": "Graduated summa cum laude in neurosurgery.",
+                    "relevance": 1.0,
+                }
+            ],
+            "approved_source_ids": ALL_SOURCES,
+        },
+    )
+    assert response.status_code == 422
+    assert "Unknown evidence source" in response.json()["detail"]
+
+
+def test_answer_rejects_excluded_source() -> None:
+    evidence = client.post(
+        "/api/retrieve", json={"question": SUPPORTED, "approved_source_ids": ALL_SOURCES}
+    ).json()["evidence"]
+    response = client.post(
+        "/api/answer",
+        json={
+            "question": SUPPORTED,
+            "evidence": evidence,
+            "approved_source_ids": ["project-latency"],
+        },
+    )
+    assert response.status_code == 422
+    assert "not approved" in response.json()["detail"]
+
+
+def test_answer_rejects_valid_evidence_for_wrong_question() -> None:
+    evidence = client.post(
+        "/api/retrieve", json={"question": SUPPORTED, "approved_source_ids": ALL_SOURCES}
+    ).json()["evidence"]
+    response = client.post(
+        "/api/answer",
+        json={
+            "question": UNSUPPORTED,
+            "evidence": evidence,
+            "approved_source_ids": ALL_SOURCES,
+        },
+    )
+    assert response.status_code == 422
+    assert "does not match server retrieval" in response.json()["detail"]
+
+
+def test_answer_rejects_empty_evidence_for_supported_question() -> None:
+    response = client.post(
+        "/api/answer",
+        json={
+            "question": SUPPORTED,
+            "evidence": [],
+            "approved_source_ids": ALL_SOURCES,
+        },
+    )
+    assert response.status_code == 422
+    assert "does not match server retrieval" in response.json()["detail"]
+
+
+def test_rejected_evidence_is_never_registered_as_speakable() -> None:
+    fabricated = client.post(
+        "/api/answer",
+        json={
+            "question": SUPPORTED,
+            "evidence": [
+                {
+                    "source_id": "cert-aws",
+                    "source_title": "Certification (fictional)",
+                    "excerpt": "Alex holds ten cloud fellowships and a private pilot license.",
+                    "relevance": 1.0,
+                }
+            ],
+            "approved_source_ids": ALL_SOURCES,
+        },
+    )
+    assert fabricated.status_code == 422
+    assert "answer_id" not in fabricated.json()
+    unknown = client.post("/api/speak", json={"answer_id": "ans-forged0001"})
+    assert unknown.status_code == 404

@@ -95,8 +95,8 @@ export const api = {
     post<Transcript>('/api/transcribe', { scenario }),
   retrieve: (question: string, approved_source_ids: string[]) =>
     post<RetrieveResponse>('/api/retrieve', { question, approved_source_ids }),
-  answer: (question: string, evidence: Evidence[]) =>
-    post<AnswerResponse>('/api/answer', { question, evidence }),
+  answer: (question: string, evidence: Evidence[], approved_source_ids: string[]) =>
+    post<AnswerResponse>('/api/answer', { question, evidence, approved_source_ids }),
   speak: (answer_id: string) => post<SpeechState>('/api/speak', { answer_id }),
   stop: () => post<SpeechState>('/api/stop', {}),
   speech: () => request<SpeechState>('/api/speech'),

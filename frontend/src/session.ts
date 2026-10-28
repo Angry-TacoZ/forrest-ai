@@ -47,6 +47,8 @@ export type SessionAction =
   | { type: 'speak:start' }
   | { type: 'speak:done'; speech: SpeechState }
   | { type: 'stop:done' }
+  | { type: 'stop:failed'; error: string }
+  | { type: 'sources:changed' }
   | { type: 'fail'; error: string }
   | { type: 'reset' };
 
@@ -87,6 +89,23 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         ...state,
         phase: 'ready',
         speech: { ...state.speech, status: 'idle', answer_id: null },
+      };
+    case 'stop:failed':
+      // Keep the phase so the Interrupt control stays usable for a retry.
+      return { ...state, error: action.error };
+    case 'sources:changed':
+      // Approval edits invalidate the draft, evidence, and candidate approval.
+      // The question is kept so the candidate can re-draft under the new set.
+      return {
+        ...state,
+        phase: state.question === '' ? 'idle' : 'transcribed',
+        evidence: [],
+        searchedSources: 0,
+        answer: null,
+        answerApproved: false,
+        speech: { status: 'idle', answer_id: null, voice: state.speech.voice },
+        spoken: false,
+        error: null,
       };
     case 'fail':
       return { ...state, phase: 'error', error: action.error };

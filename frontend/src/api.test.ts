@@ -61,4 +61,25 @@ describe('api client', () => {
     expect(errorMessage(new Error('plain'))).toBe('plain');
     expect(errorMessage('weird')).toBe('Unexpected error');
   });
+
+  it('sends the approval selection with answer requests', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({ status: 'grounded', answer: 'a', claims: [], reason: '', answer_id: 'ans-1' }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api.answer('Q?', [], ['resume-summary']);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/answer',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          question: 'Q?',
+          evidence: [],
+          approved_source_ids: ['resume-summary'],
+        }),
+      }),
+    );
+  });
 });

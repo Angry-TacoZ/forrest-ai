@@ -95,4 +95,57 @@ describe('session reducer', () => {
     expect(phaseLabel('blocked')).toBe('Answer blocked');
     expect(phaseLabel('speaking')).toBe('Speaking');
   });
+
+  it('invalidates the draft when approvals change', () => {
+    const ready: SessionState = {
+      ...initialSession,
+      phase: 'ready',
+      question: 'Q?',
+      evidence,
+      searchedSources: 3,
+      answer: grounded,
+      answerApproved: true,
+      spoken: true,
+    };
+    const state = sessionReducer(ready, { type: 'sources:changed' });
+    expect(state.phase).toBe('transcribed');
+    expect(state.question).toBe('Q?');
+    expect(state.evidence).toEqual([]);
+    expect(state.answer).toBeNull();
+    expect(state.answerApproved).toBe(false);
+    expect(state.spoken).toBe(false);
+    expect(canActivate(state)).toBe(false);
+  });
+
+  it('returns to idle when approvals change before any question', () => {
+    const state = sessionReducer(initialSession, { type: 'sources:changed' });
+    expect(state).toEqual(initialSession);
+  });
+
+  it('clears speech state when approvals change after stopping', () => {
+    const speaking: SessionState = {
+      ...initialSession,
+      phase: 'speaking',
+      question: 'Q?',
+      answer: grounded,
+      speech: { status: 'speaking', answer_id: 'ans-grounded', voice: 'forrest-synthetic-v1' },
+    };
+    const state = sessionReducer(speaking, { type: 'sources:changed' });
+    expect(state.phase).toBe('transcribed');
+    expect(state.speech.status).toBe('idle');
+    expect(state.speech.answer_id).toBeNull();
+  });
+
+  it('preserves the phase when stopping fails', () => {
+    const speaking: SessionState = {
+      ...initialSession,
+      phase: 'speaking',
+      question: 'Q?',
+      answer: grounded,
+    };
+    const state = sessionReducer(speaking, { type: 'stop:failed', error: 'network down' });
+    expect(state.phase).toBe('speaking');
+    expect(state.error).toBe('network down');
+    expect(state.answer).toBe(grounded);
+  });
 });

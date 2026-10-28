@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import './App.css';
 import { api, errorMessage } from './api.ts';
 import type { Scenario, Source } from './api.ts';
@@ -14,6 +14,9 @@ export default function App() {
   const [approved, setApproved] = useState<Record<string, boolean>>({});
   const [scenario, setScenario] = useState<Scenario>('supported');
   const [backend, setBackend] = useState<BackendStatus>('checking');
+  // Bumped whenever the approval selection or session is invalidated so
+  // in-flight transcribe/retrieve/answer responses cannot restore stale data.
+  const ticketRef = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,32 +47,64 @@ export default function App() {
   const approvedIds = sources.filter((source) => approved[source.id]).map((source) => source.id);
   const busy = BUSY_PHASES.includes(session.phase);
 
-  const toggleSource = useCallback((id: string) => {
-    setApproved((current) => ({ ...current, [id]: !current[id] }));
-  }, []);
+  const toggleSource = useCallback(
+    async (id: string) => {
+      if (session.phase === 'speaking') {
+        // Never strand backend speech behind a revoked approval: stop first,
+        // and abort the toggle entirely when the stop fails.
+        try {
+          await api.stop();
+        } catch (error) {
+          dispatch({ type: 'stop:failed', error: errorMessage(error) });
+          return;
+        }
+      }
+      ticketRef.current += 1;
+      setApproved((current) => ({ ...current, [id]: !current[id] }));
+      dispatch({ type: 'sources:changed' });
+    },
+    [session.phase],
+  );
 
   const capture = useCallback(async () => {
+    const ticket = ++ticketRef.current;
     dispatch({ type: 'capture:start', scenario });
     try {
       const transcript = await api.transcribe(scenario);
+      if (ticket !== ticketRef.current) {
+        return;
+      }
       dispatch({ type: 'capture:done', question: transcript.question });
     } catch (error) {
+      if (ticket !== ticketRef.current) {
+        return;
+      }
       dispatch({ type: 'fail', error: errorMessage(error) });
     }
   }, [scenario]);
 
   const draft = useCallback(async () => {
+    const ticket = ticketRef.current;
     dispatch({ type: 'draft:start' });
     try {
       const found = await api.retrieve(session.question, approvedIds);
+      if (ticket !== ticketRef.current) {
+        return;
+      }
       dispatch({
         type: 'draft:evidence',
         evidence: found.evidence,
         searchedSources: found.searched_sources,
       });
-      const answer = await api.answer(session.question, found.evidence);
+      const answer = await api.answer(session.question, found.evidence, approvedIds);
+      if (ticket !== ticketRef.current) {
+        return;
+      }
       dispatch({ type: 'draft:done', answer });
     } catch (error) {
+      if (ticket !== ticketRef.current) {
+        return;
+      }
       dispatch({ type: 'fail', error: errorMessage(error) });
     }
   }, [session.question, approvedIds]);
@@ -92,9 +127,23 @@ export default function App() {
       await api.stop();
       dispatch({ type: 'stop:done' });
     } catch (error) {
-      dispatch({ type: 'fail', error: errorMessage(error) });
+      // Stay in the speaking phase so the candidate can retry the interrupt.
+      dispatch({ type: 'stop:failed', error: errorMessage(error) });
     }
   }, []);
+
+  const reset = useCallback(async () => {
+    if (session.phase === 'speaking') {
+      try {
+        await api.stop();
+      } catch (error) {
+        dispatch({ type: 'stop:failed', error: errorMessage(error) });
+        return;
+      }
+    }
+    ticketRef.current += 1;
+    dispatch({ type: 'reset' });
+  }, [session.phase]);
 
   const stages = [
     { label: 'Question captured', done: session.question !== '' },
@@ -144,7 +193,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    toggleSource(source.id);
+                    void toggleSource(source.id);
                   }}
                   aria-pressed={approved[source.id] === true}
                 >
@@ -192,7 +241,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => {
-                dispatch({ type: 'reset' });
+                void reset();
               }}
             >
               Reset

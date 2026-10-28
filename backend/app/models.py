@@ -42,6 +42,7 @@ class RetrieveResponse(BaseModel):
 class AnswerRequest(BaseModel):
     question: str
     evidence: list[Evidence] = Field(default_factory=list)
+    approved_source_ids: list[str] = Field(default_factory=list)
 
 
 class Claim(BaseModel):

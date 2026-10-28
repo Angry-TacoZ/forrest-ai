@@ -37,7 +37,11 @@ def run_case(client: TestClient, case: dict) -> dict:
     ).json()
     answer = client.post(
         "/api/answer",
-        json={"question": transcript["question"], "evidence": retrieved["evidence"]},
+        json={
+            "question": transcript["question"],
+            "evidence": retrieved["evidence"],
+            "approved_source_ids": case["approved_source_ids"],
+        },
     ).json()
     expected = case["expect"]
     if expected["status"] == "grounded":

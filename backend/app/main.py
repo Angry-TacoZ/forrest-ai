@@ -48,7 +48,13 @@ def post_retrieve(body: RetrieveRequest) -> RetrieveResponse:
 
 @app.post("/api/answer")
 def post_answer(body: AnswerRequest) -> AnswerResponse:
-    return mocks.generate_answer(body.question, body.evidence)
+    try:
+        evidence = knowledge.authoritative_evidence(
+            body.question, body.evidence, body.approved_source_ids
+        )
+    except knowledge.EvidenceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return mocks.generate_answer(body.question, evidence)
 
 
 @app.post("/api/speak")

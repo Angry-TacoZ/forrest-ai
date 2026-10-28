@@ -103,3 +103,39 @@ def retrieve(
         for overlap, _, source_id, text in scored[:limit]
     ]
     return evidence, len(approved)
+
+
+class EvidenceError(ValueError):
+    """Raised when client-submitted evidence fails server-side validation."""
+
+
+def authoritative_evidence(
+    question: str, submitted: list[Evidence], approved_ids: list[str]
+) -> list[Evidence]:
+    """Validate submitted evidence and return the server's own retrieval.
+
+    Client excerpts are never trusted: every item must name a known source,
+    carry an excerpt byte-identical to a server record, and come from an
+    approved source. The submitted set must also exactly match what the
+    server retrieves for this question, so valid excerpts cannot be
+    smuggled into unrelated questions. Generation must use only the
+    returned evidence.
+    """
+    known_sources = {str(source["id"]) for source in SOURCES}
+    approved = {source_id for source_id in approved_ids if source_id in known_sources}
+    records = {(source_id, text) for source_id, text in _CHUNKS}
+    for item in submitted:
+        if item.source_id not in known_sources:
+            raise EvidenceError(f"Unknown evidence source: {item.source_id}.")
+        if (item.source_id, item.excerpt) not in records:
+            raise EvidenceError("Evidence excerpt does not match server records.")
+        if item.source_id not in approved:
+            raise EvidenceError(f"Evidence source is not approved: {item.source_id}.")
+    server_evidence, _ = retrieve(question, approved_ids)
+    server_keys = {(item.source_id, item.excerpt) for item in server_evidence}
+    submitted_keys = {(item.source_id, item.excerpt) for item in submitted}
+    if submitted_keys != server_keys:
+        raise EvidenceError(
+            "Submitted evidence does not match server retrieval for this question."
+        )
+    return server_evidence
