@@ -200,23 +200,30 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
         return;
       }
       // Ambiguous failure: the backend may have started speech even though
-      // the request failed or timed out. Late successes are contained by
-      // the timeout hook's id-scoped cleanup instead of a ticket bump.
+      // the request failed or timed out. Ownership is rechecked after the
+      // cleanup await, since a newer activation may have begun meanwhile.
       const stale = ticket !== ticketRef.current;
       try {
         await api.stop();
-        dispatch(
-          stale
-            ? { type: 'activation:settled' }
-            : { type: 'activation:failed', error: errorMessage(error) },
-        );
       } catch (cleanupError) {
+        if (epoch !== epochRef.current) {
+          return;
+        }
         dispatch(
           stale
             ? { type: 'activation:unconfirmed', error: errorMessage(cleanupError) }
             : { type: 'stop:failed', error: errorMessage(cleanupError) },
         );
+        return;
       }
+      if (epoch !== epochRef.current) {
+        return;
+      }
+      dispatch(
+        stale
+          ? { type: 'activation:settled' }
+          : { type: 'activation:failed', error: errorMessage(error) },
+      );
     }
   }, [session.answer, activationTimeoutMs]);
 

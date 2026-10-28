@@ -659,4 +659,44 @@ describe('activation lifecycle', () => {
     expect(screen.getByRole('button', { name: 'Retry stop' })).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('cleanup unreachable');
   });
+
+  it('leaves a newer activation alone when old cleanup finishes late', async () => {
+    const { gate: firstGate, reject: rejectFirst } = deferredResponse();
+    let releaseCleanup!: (response: Response) => void;
+    const cleanupGate = new Promise<Response>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    let stopCalls = 0;
+    const secondResponse = jsonResponse({
+      status: 'speaking',
+      answer_id: 'ans-1',
+      voice: 'forrest-synthetic-v1',
+      activation_id: 'spk-0002',
+    });
+    const fetchMock = stubFullApi({
+      speakResponses: [firstGate, Promise.resolve(secondResponse)],
+      stop: () => {
+        stopCalls += 1;
+        return stopCalls === 1 ? cleanupGate : Promise.resolve(jsonResponse(IDLE_SPEECH));
+      },
+    });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Starting speech');
+    rejectFirst(new Error('first request failed'));
+    await vi.waitFor(() => {
+      expect(stopCalls).toBe(1);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Interrupt' }));
+    await screen.findByText('State: Ready for review');
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Speaking');
+    releaseCleanup(jsonResponse(IDLE_SPEECH));
+    await flushAsyncWork(cleanupGate);
+
+    expect(screen.getByText('State: Speaking')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.filter(([url]) => url === '/api/stop')).toHaveLength(2);
+  });
 });
