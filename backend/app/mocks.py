@@ -6,6 +6,7 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 
+from . import knowledge
 from .models import AnswerResponse, Claim, Evidence, Transcript
 
 ENGINE_TRANSCRIBE = "mock-transcribe-v1"
@@ -33,6 +34,10 @@ class _Approval(TypedDict):
 _answer_registry: dict[str, str] = {}  # answer_id -> "grounded" | "blocked"
 _answer_details: dict[str, _AnswerDetails] = {}
 _approvals: dict[str, _Approval] = {}
+# The selection the candidate last synced. Approvals are validated against
+# this, never against IDs supplied with the approval request itself, so a
+# stale or forged approval cannot resurrect an excluded source.
+_current_selection: set[str] = {str(item["id"]) for item in knowledge.list_sources()}
 _selection_epoch = 0
 _speech: dict[str, str | None] = {"status": "idle", "answer_id": None, "activation_id": None}
 _activation_seq = 0
@@ -46,6 +51,8 @@ def _utcnow() -> datetime:
 def set_selection(approved_ids: list[str]) -> int:
     """Record a new source selection; every change invalidates prior approvals."""
     global _selection_epoch
+    _current_selection.clear()
+    _current_selection.update(approved_ids)
     _selection_epoch += 1
     return _selection_epoch
 
@@ -114,11 +121,14 @@ def approve(answer_id: str, approved_ids: list[str]) -> tuple[str, str | None]:
     if _answer_registry[answer_id] != "grounded":
         return "refused", "Only grounded answers can be approved for speech."
     evidence_sources = set(_answer_details[answer_id]["evidence_sources"])
+    if not evidence_sources.issubset(_current_selection):
+        return "mismatched", "Answer evidence is no longer within the approved selection."
     if not evidence_sources.issubset(set(approved_ids)):
         return "mismatched", "Approval selection does not cover the answer's evidence."
-    epoch = set_selection(approved_ids)
+    # Approving records the current epoch but never mutates the selection:
+    # only an explicit selection sync may change what is approved.
     _approvals[answer_id] = {
-        "epoch": epoch,
+        "epoch": _selection_epoch,
         "expires_at": _utcnow() + timedelta(seconds=APPROVAL_TTL_SECONDS),
         "revoked": False,
     }

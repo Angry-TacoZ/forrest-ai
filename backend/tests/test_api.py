@@ -1,5 +1,6 @@
 """Backend API tests: pipeline, approvals, blocking, and speech gating."""
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -13,6 +14,13 @@ client = TestClient(app)
 SUPPORTED = "Tell me about your backend experience with checkout latency."
 UNSUPPORTED = "Are you able to perform pediatric neurosurgery?"
 ALL_SOURCES = ["resume-summary", "project-latency", "cert-aws"]
+
+
+@pytest.fixture(autouse=True)
+def _restore_full_selection() -> Iterator[None]:
+    """The mock server holds one global selection; hand each test a full one."""
+    yield
+    client.put("/api/selection", json={"approved_source_ids": ALL_SOURCES})
 
 
 def test_health() -> None:
@@ -386,6 +394,21 @@ def test_revoked_answer_cannot_speak_until_reapproved() -> None:
     assert _approved_answer_id() == answer_id
     assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 200
     client.post("/api/stop", json={})
+
+
+def test_approve_rejects_evidence_excluded_from_current_selection() -> None:
+    answer_id = _grounded_answer_id()
+    narrowed = client.put(
+        "/api/selection", json={"approved_source_ids": ["project-latency"]}
+    )
+    assert narrowed.status_code == 200
+    stale_approve = client.post(
+        "/api/approve",
+        json={"answer_id": answer_id, "approved_source_ids": ALL_SOURCES},
+    )
+    assert stale_approve.status_code == 422
+    assert "no longer within" in stale_approve.json()["detail"]
+    assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 403
 
 
 def test_selection_change_stales_existing_approval() -> None:

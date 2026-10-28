@@ -803,6 +803,26 @@ describe('server-side approval', () => {
     });
   });
 
+  it('serializes source toggles while a selection sync is in flight', async () => {
+    let resolveSelection!: (response: Response) => void;
+    const selectionGate = new Promise<Response>((resolve) => {
+      resolveSelection = resolve;
+    });
+    stubFullApi({ selection: () => selectionGate });
+    await driveToReady();
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Exclude' }))[0]);
+
+    // While the first sync is pending, no second toggle may start from the
+    // same captured selection and silently undo it server-side.
+    const pending = await screen.findAllByRole('button', { name: 'Exclude' });
+    expect(pending).toHaveLength(2);
+    expect(pending[1]).toBeDisabled();
+
+    resolveSelection(jsonResponse({ approved_source_ids: ['project-latency'], epoch: 1 }));
+    await screen.findByText('1 of 2 sources approved for retrieval.');
+    expect((await screen.findAllByRole('button', { name: 'Approve' }))[0]).toBeEnabled();
+  });
+
   it('aborts a source toggle when the selection sync fails', async () => {
     stubFullApi({ selection: () => Promise.reject(new Error('selection unreachable')) });
     await driveToReady();

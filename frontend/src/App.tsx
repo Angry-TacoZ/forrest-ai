@@ -27,6 +27,10 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
   // An approval request is in flight; the checkbox stays disabled so rapid
   // check/uncheck toggles cannot interleave approve and revoke calls.
   const [approvalPending, setApprovalPending] = useState(false);
+  // A selection sync is in flight; source buttons stay disabled so a second
+  // toggle cannot start from the same captured selection and silently undo
+  // the first one server-side.
+  const [selectionPending, setSelectionPending] = useState(false);
   // Bumped whenever the approval selection or session is invalidated so
   // in-flight transcribe/retrieve/answer/speak responses cannot restore
   // stale data. Every stop-initiating action claims a ticket first so a
@@ -104,11 +108,14 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
         .map((source) => source.id);
       // Sync the selection before invalidating locally: the backend epoch
       // bump is what stales every prior approval server-side.
+      setSelectionPending(true);
       try {
         await api.setSelection(nextIds);
       } catch (error) {
         dispatch({ type: 'stop:failed', error: errorMessage(error) });
         return;
+      } finally {
+        setSelectionPending(false);
       }
       ticketRef.current += 1;
       setApproved(nextApproved);
@@ -379,6 +386,7 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
                     void toggleSource(source.id);
                   }}
                   aria-pressed={approved[source.id] === true}
+                  disabled={selectionPending}
                 >
                   {approved[source.id] ? 'Exclude' : 'Approve'}
                 </button>
