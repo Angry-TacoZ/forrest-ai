@@ -1,0 +1,98 @@
+# Forrest AI .gitignore
+# Public repo: when in doubt, keep candidate data and secrets out.
+# Real records, credentials, and recordings always live outside the repository.
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+pip-wheel-metadata/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+tox.ini
+
+# --- Node.js ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+.nuxt/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# --- Credentials and secrets (never commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials*.json
+*token*.json
+service-account*.json
+
+# --- Local databases ---
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# --- Candidate records, transcripts, and recordings (never commit real data) ---
+# Public demos use fictional or sanitized fixtures kept in tests/fixtures/.
+candidate-data/
+candidates/
+interviews/
+transcripts/
+recordings/
+audio/
+private/
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.flac
+*.aac
+*.opus
+*.srt
+*.vtt
+*.sbv
+
+# --- Logs and local state ---
+logs/
+*.log
+*.pid
+*.seed
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# --- ML artifacts and caches ---
+*.bin
+*.onnx
+*.pt
+*.pth
+*.safetensors
+models/
+checkpoints/
+.huggingface/
