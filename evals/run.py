@@ -82,11 +82,13 @@ def run_case(client: TestClient, case: dict) -> dict:
     unapproved_speak = client.post(
         "/api/speak", json={"answer_id": answer["answer_id"]}
     ).status_code
+    epoch = client.get("/api/selection").json()["epoch"]
     approval = client.post(
         "/api/approve",
         json={
             "answer_id": answer["answer_id"],
             "approved_source_ids": case["approved_source_ids"],
+            "epoch": epoch,
         },
     ).status_code
     speak = client.post(

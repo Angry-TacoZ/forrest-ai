@@ -58,13 +58,21 @@ def current_selection() -> set[str]:
     return set(_current_selection)
 
 
-def set_selection(approved_ids: list[str]) -> int:
-    """Record a new source selection; every change invalidates prior approvals."""
+def _bump_epoch() -> int:
+    """Invalidate the current generation; every approval records its own."""
     global _selection_epoch
-    _current_selection.clear()
-    _current_selection.update(approved_ids)
     _selection_epoch += 1
     return _selection_epoch
+
+
+def set_selection(approved_ids: list[str]) -> int:
+    """Record a new source selection; every change invalidates prior approvals."""
+    _current_selection.clear()
+    _current_selection.update(approved_ids)
+    # Active speech was authorized under a superseded selection: the server
+    # stops it itself instead of trusting the caller to interrupt first.
+    stop()
+    return _bump_epoch()
 
 
 def transcribe(scenario: str) -> Transcript:
@@ -124,12 +132,21 @@ def approval_error(answer_id: str) -> str | None:
     return None
 
 
-def approve(answer_id: str, approved_ids: list[str]) -> tuple[str, str | None]:
-    """Approve a grounded answer under a selection covering its evidence."""
+def approve(
+    answer_id: str, approved_ids: list[str], epoch: int
+) -> tuple[str, str | None]:
+    """Approve a grounded answer under a selection covering its evidence.
+
+    The caller presents the generation its approval was issued against; a
+    request older than the current generation (delayed past a revocation or
+    selection change) is rejected instead of resurrecting a dead approval.
+    """
     if answer_id not in _answer_registry:
         return "unknown", f"Unknown answer id: {answer_id}."
     if _answer_registry[answer_id] != "grounded":
         return "refused", "Only grounded answers can be approved for speech."
+    if epoch < _selection_epoch:
+        return "stale", "Approval request targets a superseded selection generation."
     evidence_sources = set(_answer_details[answer_id]["evidence_sources"])
     if not evidence_sources.issubset(_current_selection):
         return "mismatched", "Answer evidence is no longer within the approved selection."
@@ -149,15 +166,18 @@ def revoke(answer_id: str) -> tuple[str, str | None]:
     """Revoke approval; the answer needs fresh approval before it may be spoken."""
     if answer_id not in _answer_registry:
         return "unknown", f"Unknown answer id: {answer_id}."
+    epoch = _bump_epoch()
     approval = _approvals.get(answer_id)
     if approval is None:
         _approvals[answer_id] = {
-            "epoch": _selection_epoch,
+            "epoch": epoch,
             "expires_at": _utcnow(),
             "revoked": True,
         }
     else:
         approval["revoked"] = True
+    if _speech["status"] == "speaking" and _speech["answer_id"] == answer_id:
+        stop()
     return "revoked", None
 
 

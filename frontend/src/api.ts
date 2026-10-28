@@ -51,6 +51,7 @@ export interface ApprovalStatus {
   answer_id: string;
   status: 'approved' | 'unapproved';
   revoked: boolean;
+  epoch: number;
 }
 
 export interface SelectionState {
@@ -151,8 +152,8 @@ export const api = {
     post<RetrieveResponse>('/api/retrieve', { question, approved_source_ids }),
   answer: (question: string, evidence: Evidence[], approved_source_ids: string[]) =>
     post<AnswerResponse>('/api/answer', { question, evidence, approved_source_ids }),
-  approve: (answer_id: string, approved_source_ids: string[]) =>
-    post<ApprovalStatus>('/api/approve', { answer_id, approved_source_ids }),
+  approve: (answer_id: string, approved_source_ids: string[], epoch: number) =>
+    post<ApprovalStatus>('/api/approve', { answer_id, approved_source_ids, epoch }),
   revoke: (answer_id: string) => post<ApprovalStatus>('/api/revoke', { answer_id }),
   setSelection: (approved_source_ids: string[]) =>
     put<SelectionState>('/api/selection', { approved_source_ids }),

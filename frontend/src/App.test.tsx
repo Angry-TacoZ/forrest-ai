@@ -193,13 +193,13 @@ function stubFullApi(options: FullApiOptions = {}) {
       if (options.approve) {
         return options.approve();
       }
-      return jsonResponse({ answer_id: 'ans-1', status: 'approved', revoked: false });
+      return jsonResponse({ answer_id: 'ans-1', status: 'approved', revoked: false, epoch: 0 });
     }
     if (url === '/api/revoke') {
       if (options.revoke) {
         return options.revoke();
       }
-      return jsonResponse({ answer_id: 'ans-1', status: 'unapproved', revoked: true });
+      return jsonResponse({ answer_id: 'ans-1', status: 'unapproved', revoked: true, epoch: 1 });
     }
     if (url === '/api/selection') {
       if (init?.method === 'PUT') {
@@ -781,9 +781,48 @@ describe('server-side approval', () => {
       {
         answer_id: 'ans-1',
         approved_source_ids: ['resume-summary', 'project-latency'],
+        epoch: 0,
       },
     ]);
     expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeEnabled();
+  });
+
+  it('approves against the generation following a revocation', async () => {
+    const fetchMock = stubFullApi();
+    await driveToReady();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    await screen.findByRole('checkbox', { checked: false });
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    await screen.findByRole('checkbox', { checked: true });
+
+    const bodies = requestBodies(fetchMock, '/api/approve');
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toMatchObject({ epoch: 0 });
+    // The revoke response carried generation 1, so the re-approval must
+    // present it instead of replaying the superseded generation 0.
+    expect(bodies[1]).toMatchObject({ epoch: 1 });
+  });
+
+  it('disables activation while revocation is pending', async () => {
+    let resolveRevoke!: (response: Response) => void;
+    const revokeGate = new Promise<Response>((resolve) => {
+      resolveRevoke = resolve;
+    });
+    stubFullApi({ revoke: () => revokeGate });
+    await driveToReady();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+
+    // The box is still checked and the session still ready, so without the
+    // pending guard the candidate could start speech mid-revocation.
+    expect(screen.getByRole('checkbox', { name: /I reviewed this answer/ })).toBeChecked();
+    await vi.waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Activate Forrest' })).toBeDisabled();
+    });
+
+    resolveRevoke(
+      jsonResponse({ answer_id: 'ans-1', status: 'unapproved', revoked: true, epoch: 1 }),
+    );
+    await screen.findByRole('checkbox', { checked: false });
   });
 
   it('leaves the box unchecked when backend approval fails', async () => {

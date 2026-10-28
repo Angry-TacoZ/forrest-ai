@@ -142,13 +142,14 @@ describe('api client', () => {
 
   it('approves an answer under the current selection', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ answer_id: 'ans-1', status: 'approved', revoked: false }),
+      jsonResponse({ answer_id: 'ans-1', status: 'approved', revoked: false, epoch: 3 }),
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await api.approve('ans-1', ['resume-summary']);
+    const result = await api.approve('ans-1', ['resume-summary'], 3);
 
     expect(result.status).toBe('approved');
+    expect(result.epoch).toBe(3);
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/approve',
       expect.objectContaining({
@@ -156,6 +157,7 @@ describe('api client', () => {
         body: JSON.stringify({
           answer_id: 'ans-1',
           approved_source_ids: ['resume-summary'],
+          epoch: 3,
         }),
       }),
     );
@@ -163,13 +165,14 @@ describe('api client', () => {
 
   it('revokes an answer approval', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResponse({ answer_id: 'ans-1', status: 'unapproved', revoked: true }),
+      jsonResponse({ answer_id: 'ans-1', status: 'unapproved', revoked: true, epoch: 4 }),
     );
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await api.revoke('ans-1');
 
     expect(result.revoked).toBe(true);
+    expect(result.epoch).toBe(4);
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/revoke',
       expect.objectContaining({

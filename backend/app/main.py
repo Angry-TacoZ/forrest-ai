@@ -77,12 +77,14 @@ def post_answer(body: AnswerRequest) -> AnswerResponse:
 
 @app.post("/api/approve")
 def post_approve(body: ApproveRequest) -> ApprovalStatus:
-    status, error = mocks.approve(body.answer_id, body.approved_source_ids)
+    status, error = mocks.approve(body.answer_id, body.approved_source_ids, body.epoch)
     if status == "unknown":
         raise HTTPException(status_code=404, detail=error)
-    if status in ("refused", "mismatched"):
+    if status in ("refused", "mismatched", "stale"):
         raise HTTPException(status_code=422, detail=error)
-    return ApprovalStatus(answer_id=body.answer_id, status="approved")
+    return ApprovalStatus(
+        answer_id=body.answer_id, status="approved", epoch=mocks.selection_epoch()
+    )
 
 
 @app.post("/api/revoke")
@@ -90,7 +92,12 @@ def post_revoke(body: RevokeRequest) -> ApprovalStatus:
     status, error = mocks.revoke(body.answer_id)
     if status == "unknown":
         raise HTTPException(status_code=404, detail=error)
-    return ApprovalStatus(answer_id=body.answer_id, status="unapproved", revoked=True)
+    return ApprovalStatus(
+        answer_id=body.answer_id,
+        status="unapproved",
+        revoked=True,
+        epoch=mocks.selection_epoch(),
+    )
 
 
 @app.put("/api/selection")

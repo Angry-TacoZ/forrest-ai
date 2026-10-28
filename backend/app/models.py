@@ -69,12 +69,14 @@ class StopRequest(BaseModel):
 class ApproveRequest(BaseModel):
     answer_id: str
     approved_source_ids: list[str] = Field(default_factory=list)
+    epoch: int
 
 
 class ApprovalStatus(BaseModel):
     answer_id: str
     status: str  # "approved" | "unapproved"
     revoked: bool = False
+    epoch: int
 
 
 class RevokeRequest(BaseModel):

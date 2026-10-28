@@ -3,6 +3,7 @@
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -180,10 +181,7 @@ def test_speak_and_stop_flow() -> None:
             "approved_source_ids": ALL_SOURCES,
         },
     ).json()
-    approved = client.post(
-        "/api/approve",
-        json={"answer_id": grounded["answer_id"], "approved_source_ids": ALL_SOURCES},
-    )
+    approved = _approve(grounded["answer_id"])
     assert approved.json()["status"] == "approved"
     speaking = client.post("/api/speak", json={"answer_id": grounded["answer_id"]})
     assert speaking.json()["status"] == "speaking"
@@ -319,12 +317,21 @@ def _grounded_answer_id() -> str:
     ).json()["answer_id"]
 
 
+def _approve(
+    answer_id: str, approved_ids: list[str] | None = None
+) -> httpx.Response:
+    """Approve against the server's current generation (rejects on reorder)."""
+    ids = ALL_SOURCES if approved_ids is None else approved_ids
+    epoch = client.get("/api/selection").json()["epoch"]
+    return client.post(
+        "/api/approve",
+        json={"answer_id": answer_id, "approved_source_ids": ids, "epoch": epoch},
+    )
+
+
 def _approved_answer_id() -> str:
     answer_id = _grounded_answer_id()
-    response = client.post(
-        "/api/approve",
-        json={"answer_id": answer_id, "approved_source_ids": ALL_SOURCES},
-    )
+    response = _approve(answer_id)
     assert response.status_code == 200
     return answer_id
 
@@ -400,10 +407,7 @@ def test_speak_rejects_unapproved_grounded_answer() -> None:
 
 
 def test_approve_rejects_unknown_answer() -> None:
-    response = client.post(
-        "/api/approve",
-        json={"answer_id": "ans-forged0002", "approved_source_ids": ALL_SOURCES},
-    )
+    response = _approve("ans-forged0002")
     assert response.status_code == 404
 
 
@@ -411,19 +415,13 @@ def test_approve_rejects_blocked_answer() -> None:
     blocked = client.post(
         "/api/answer", json={"question": UNSUPPORTED, "evidence": []}
     ).json()
-    response = client.post(
-        "/api/approve",
-        json={"answer_id": blocked["answer_id"], "approved_source_ids": ALL_SOURCES},
-    )
+    response = _approve(blocked["answer_id"])
     assert response.status_code == 422
 
 
 def test_approve_rejects_selection_missing_evidence_source() -> None:
     answer_id = _grounded_answer_id()
-    response = client.post(
-        "/api/approve",
-        json={"answer_id": answer_id, "approved_source_ids": ["project-latency"]},
-    )
+    response = _approve(answer_id, ["project-latency"])
     assert response.status_code == 422
     assert "does not cover" in response.json()["detail"]
     assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 403
@@ -448,10 +446,7 @@ def test_approve_rejects_evidence_excluded_from_current_selection() -> None:
         "/api/selection", json={"approved_source_ids": ["project-latency"]}
     )
     assert narrowed.status_code == 200
-    stale_approve = client.post(
-        "/api/approve",
-        json={"answer_id": answer_id, "approved_source_ids": ALL_SOURCES},
-    )
+    stale_approve = _approve(answer_id)
     assert stale_approve.status_code == 422
     assert "no longer within" in stale_approve.json()["detail"]
     assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 403
@@ -479,10 +474,7 @@ def test_expired_approval_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     answer_id = _grounded_answer_id()
     now = datetime.now(UTC)
     monkeypatch.setattr(mocks, "_utcnow", lambda: now)
-    approved = client.post(
-        "/api/approve",
-        json={"answer_id": answer_id, "approved_source_ids": ALL_SOURCES},
-    )
+    approved = _approve(answer_id)
     assert approved.status_code == 200
     monkeypatch.setattr(mocks, "_utcnow", lambda: now + timedelta(seconds=16 * 60))
     expired = client.post("/api/speak", json={"answer_id": answer_id})
@@ -500,3 +492,76 @@ def test_revoke_is_idempotent() -> None:
     assert client.post("/api/revoke", json={"answer_id": answer_id}).status_code == 200
     assert client.post("/api/revoke", json={"answer_id": answer_id}).status_code == 200
     assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 403
+
+
+def test_stale_approval_request_cannot_reverse_revocation() -> None:
+    answer_id = _grounded_answer_id()
+    issued_epoch = client.get("/api/selection").json()["epoch"]
+    # The candidate's reset reaches the server first (revocation).
+    assert client.post("/api/revoke", json={"answer_id": answer_id}).status_code == 200
+    # The delayed approve issued before the reset arrives afterward.
+    late = client.post(
+        "/api/approve",
+        json={
+            "answer_id": answer_id,
+            "approved_source_ids": ALL_SOURCES,
+            "epoch": issued_epoch,
+        },
+    )
+    assert late.status_code == 422
+    assert "superseded" in late.json()["detail"]
+    assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 403
+
+
+def test_approve_requires_a_selection_generation() -> None:
+    answer_id = _grounded_answer_id()
+    missing = client.post(
+        "/api/approve",
+        json={"answer_id": answer_id, "approved_source_ids": ALL_SOURCES},
+    )
+    assert missing.status_code == 422
+
+
+def test_revoke_stops_active_speech_for_that_answer() -> None:
+    answer_id = _approved_answer_id()
+    assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 200
+    assert client.get("/api/speech").json()["status"] == "speaking"
+    assert client.post("/api/revoke", json={"answer_id": answer_id}).status_code == 200
+    state = client.get("/api/speech").json()
+    assert state["status"] == "idle"
+    assert state["answer_id"] is None
+    assert state["activation_id"] is None
+
+
+def test_selection_change_stops_active_speech() -> None:
+    answer_id = _approved_answer_id()
+    assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 200
+    narrowed = client.put(
+        "/api/selection", json={"approved_source_ids": ["project-latency"]}
+    )
+    assert narrowed.status_code == 200
+    assert client.get("/api/speech").json()["status"] == "idle"
+
+
+def test_revoke_leaves_unrelated_speech_running() -> None:
+    first = _approved_answer_id()
+    subset_evidence = client.post(
+        "/api/retrieve",
+        json={"question": SUPPORTED, "approved_source_ids": ["project-latency"]},
+    ).json()["evidence"]
+    second = client.post(
+        "/api/answer",
+        json={
+            "question": SUPPORTED,
+            "evidence": subset_evidence,
+            "approved_source_ids": ["project-latency"],
+        },
+    ).json()["answer_id"]
+    assert second != first
+    assert _approve(second, ["project-latency"]).status_code == 200
+    assert client.post("/api/speak", json={"answer_id": first}).status_code == 200
+    assert client.post("/api/revoke", json={"answer_id": second}).status_code == 200
+    state = client.get("/api/speech").json()
+    assert state["status"] == "speaking"
+    assert state["answer_id"] == first
+    client.post("/api/stop", json={})

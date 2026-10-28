@@ -62,11 +62,16 @@ Open http://localhost:5173 in a browser.
 - Answers start unapproved; nothing may be spoken without explicit, current,
   server-validated candidate approval. Revoked, stale, and expired (15 min)
   approvals are rejected even by direct API callers.
+- Approvals present the server's selection generation, so a delayed approval
+  can never reverse a newer revocation or selection change.
+- Revocation stops that answer's active speech server-side, and a selection
+  change stops any active speech, instead of trusting callers to interrupt.
 - Reloading the workspace restores the last synced selection instead of
   defaults, and late approval responses for invalidated answers are dropped.
-- Activation is locked while a source change is in flight, and reloading
-  during speech stops the orphaned backend speech (with a retry control if
-  cleanup fails) instead of stranding it without an Interrupt.
+- Activation is locked while a source change or an approval/revocation
+  request is in flight, and reloading during speech stops the orphaned
+  backend speech (with a retry control if cleanup fails) instead of
+  stranding it without an Interrupt.
 - Activation runs through an explicit Starting speech state with Interrupt
   available; ambiguous failures attempt backend cleanup and keep a retryable
   stop until speech is confirmed stopped.

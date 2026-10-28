@@ -31,6 +31,10 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
   // toggle cannot start from the same captured selection and silently undo
   // the first one server-side.
   const [selectionPending, setSelectionPending] = useState(false);
+  // The server's current selection generation. Approvals present it so the
+  // backend can reject requests delayed past a revocation or selection
+  // change instead of resurrecting a dead approval.
+  const [selectionEpoch, setSelectionEpoch] = useState(0);
   // Bumped whenever the approval selection or session is invalidated so
   // in-flight transcribe/retrieve/answer/speak responses cannot restore
   // stale data. Every stop-initiating action claims a ticket first so a
@@ -57,6 +61,7 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
         );
         try {
           const selection = await api.getSelection();
+          setSelectionEpoch(selection.epoch);
           if (selection.epoch > 0) {
             const synced = new Set(selection.approved_source_ids);
             initialApproved = Object.fromEntries(
@@ -147,7 +152,8 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
       // bump is what stales every prior approval server-side.
       setSelectionPending(true);
       try {
-        await api.setSelection(nextIds);
+        const selection = await api.setSelection(nextIds);
+        setSelectionEpoch(selection.epoch);
       } catch (error) {
         dispatch({ type: 'stop:failed', error: errorMessage(error) });
         return;
@@ -171,7 +177,8 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
     const ticket = ticketRef.current;
     setApprovalPending(true);
     try {
-      await api.approve(session.answer.answer_id, approvedIds);
+      const approval = await api.approve(session.answer.answer_id, approvedIds, selectionEpoch);
+      setSelectionEpoch(approval.epoch);
     } catch (error) {
       if (ticket !== ticketRef.current) {
         return;
@@ -186,7 +193,7 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
       return;
     }
     dispatch({ type: 'approval:set', approved: true });
-  }, [approvedIds, session.answer]);
+  }, [approvedIds, selectionEpoch, session.answer]);
 
   const revokeApproval = useCallback(async () => {
     if (!session.answer) {
@@ -202,7 +209,10 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
     // approval is cleared immediately so the checkbox never claims an
     // approval the backend no longer holds, even if stopping fails next.
     try {
-      await api.revoke(session.answer.answer_id);
+      const revoked = await api.revoke(session.answer.answer_id);
+      // Revocation invalidates the generation; the next approval must
+      // present the new one.
+      setSelectionEpoch(revoked.epoch);
     } catch (error) {
       if (ticket !== ticketRef.current) {
         return;
@@ -570,7 +580,7 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
             <button
               type="button"
               onClick={activate}
-              disabled={!canActivate(session) || selectionPending}
+              disabled={!canActivate(session) || selectionPending || approvalPending}
             >
               Activate Forrest
             </button>
