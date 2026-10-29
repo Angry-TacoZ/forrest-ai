@@ -33,7 +33,9 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
   const [selectionPending, setSelectionPending] = useState(false);
   // The server's current selection generation. Approvals present it so the
   // backend can reject requests delayed past a revocation or selection
-  // change instead of resurrecting a dead approval.
+  // change instead of resurrecting a dead approval. Response-derived
+  // updates only ever move it forward (max); only an explicit
+  // resynchronization from the server sets it directly.
   const [selectionEpoch, setSelectionEpoch] = useState(0);
   // Bumped whenever the approval selection or session is invalidated so
   // in-flight transcribe/retrieve/answer/speak responses cannot restore
@@ -153,7 +155,7 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
       setSelectionPending(true);
       try {
         const selection = await api.setSelection(nextIds);
-        setSelectionEpoch(selection.epoch);
+        setSelectionEpoch((current) => Math.max(current, selection.epoch));
       } catch (error) {
         dispatch({ type: 'stop:failed', error: errorMessage(error) });
         return;
@@ -167,6 +169,23 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
     [approved, sources, stopIfSpeechActive],
   );
 
+  // Re-read the server's selection after a generation mismatch: the backend
+  // may have restarted or a generation may have been missed. Returns false
+  // when the server is unreachable and nothing was resynchronized.
+  const resynchronizeSelection = useCallback(async (): Promise<boolean> => {
+    try {
+      const selection = await api.getSelection();
+      const synced = new Set(selection.approved_source_ids);
+      setApproved(
+        Object.fromEntries(sources.map((source) => [source.id, synced.has(source.id)])),
+      );
+      setSelectionEpoch(selection.epoch);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [sources]);
+
   const approveAnswer = useCallback(async () => {
     if (!session.answer || session.answer.status !== 'grounded') {
       return;
@@ -178,9 +197,33 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
     setApprovalPending(true);
     try {
       const approval = await api.approve(session.answer.answer_id, approvedIds, selectionEpoch);
-      setSelectionEpoch(approval.epoch);
+      if (ticket !== ticketRef.current) {
+        return;
+      }
+      setSelectionEpoch((current) => Math.max(current, approval.epoch));
     } catch (error) {
       if (ticket !== ticketRef.current) {
+        return;
+      }
+      if (error instanceof ApiError && error.status === 409) {
+        // The client and server disagree about the current generation: adopt
+        // the server's truth and drop the draft issued against the dead
+        // generation instead of retrying blindly.
+        const resynchronized = await resynchronizeSelection();
+        if (ticket !== ticketRef.current) {
+          return;
+        }
+        if (resynchronized) {
+          ticketRef.current += 1;
+          dispatch({ type: 'sources:changed' });
+          dispatch({
+            type: 'stop:failed',
+            error:
+              'Approval generation mismatch; selection resynchronized from the server. Please draft again.',
+          });
+        } else {
+          dispatch({ type: 'stop:failed', error: errorMessage(error) });
+        }
         return;
       }
       // Phase is kept so Interrupt stays usable when speech may be active.
@@ -193,7 +236,7 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
       return;
     }
     dispatch({ type: 'approval:set', approved: true });
-  }, [approvedIds, selectionEpoch, session.answer]);
+  }, [approvedIds, resynchronizeSelection, selectionEpoch, session.answer]);
 
   const revokeApproval = useCallback(async () => {
     if (!session.answer) {
@@ -210,9 +253,12 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
     // approval the backend no longer holds, even if stopping fails next.
     try {
       const revoked = await api.revoke(session.answer.answer_id);
+      if (ticket !== ticketRef.current) {
+        return;
+      }
       // Revocation invalidates the generation; the next approval must
       // present the new one.
-      setSelectionEpoch(revoked.epoch);
+      setSelectionEpoch((current) => Math.max(current, revoked.epoch));
     } catch (error) {
       if (ticket !== ticketRef.current) {
         return;
@@ -376,7 +422,11 @@ export default function App({ activationTimeoutMs = ACTIVATION_TIMEOUT_MS }: App
     // for an answer the session no longer shows.
     if (session.answer) {
       try {
-        await api.revoke(session.answer.answer_id);
+        const revoked = await api.revoke(session.answer.answer_id);
+        // Reset revokes server-side, which invalidates the generation: track
+        // it so the next session's approvals present a current generation.
+        // Max-guarded: an interleaved toggle may already have moved further.
+        setSelectionEpoch((current) => Math.max(current, revoked.epoch));
       } catch (error) {
         dispatch({ type: 'stop:failed', error: errorMessage(error) });
         return;

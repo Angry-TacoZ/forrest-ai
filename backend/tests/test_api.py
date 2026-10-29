@@ -508,8 +508,8 @@ def test_stale_approval_request_cannot_reverse_revocation() -> None:
             "epoch": issued_epoch,
         },
     )
-    assert late.status_code == 422
-    assert "superseded" in late.json()["detail"]
+    assert late.status_code == 409
+    assert "does not match" in late.json()["detail"]
     assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 403
 
 
@@ -520,6 +520,75 @@ def test_approve_requires_a_selection_generation() -> None:
         json={"answer_id": answer_id, "approved_source_ids": ALL_SOURCES},
     )
     assert missing.status_code == 422
+
+
+def test_approve_accepts_current_generation() -> None:
+    answer_id = _grounded_answer_id()
+    epoch = client.get("/api/selection").json()["epoch"]
+    response = client.post(
+        "/api/approve",
+        json={
+            "answer_id": answer_id,
+            "approved_source_ids": ALL_SOURCES,
+            "epoch": epoch,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["epoch"] == epoch
+
+
+def test_approve_rejects_future_generation() -> None:
+    answer_id = _grounded_answer_id()
+    epoch = client.get("/api/selection").json()["epoch"]
+    future = client.post(
+        "/api/approve",
+        json={
+            "answer_id": answer_id,
+            "approved_source_ids": ALL_SOURCES,
+            "epoch": epoch + 5,
+        },
+    )
+    assert future.status_code == 409
+    assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 403
+
+
+def test_approval_delayed_beyond_selection_change_is_rejected() -> None:
+    answer_id = _grounded_answer_id()
+    issued = client.get("/api/selection").json()["epoch"]
+    bumped = client.put("/api/selection", json={"approved_source_ids": ALL_SOURCES})
+    assert bumped.status_code == 200
+    late = client.post(
+        "/api/approve",
+        json={
+            "answer_id": answer_id,
+            "approved_source_ids": ALL_SOURCES,
+            "epoch": issued,
+        },
+    )
+    assert late.status_code == 409
+    assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 403
+
+
+def test_client_can_resynchronize_after_generation_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answer_id = _approved_answer_id()
+    bumped = client.put("/api/selection", json={"approved_source_ids": ALL_SOURCES})
+    assert bumped.json()["epoch"] >= 1
+    # Simulate a backend restart: registries and the generation are wiped.
+    monkeypatch.setattr(mocks, "_selection_epoch", 0)
+    monkeypatch.setattr(mocks, "_current_selection", set(ALL_SOURCES))
+    monkeypatch.setattr(mocks, "_answer_registry", {})
+    monkeypatch.setattr(mocks, "_answer_details", {})
+    monkeypatch.setattr(mocks, "_approvals", {})
+    monkeypatch.setattr(
+        mocks, "_speech", {"status": "idle", "answer_id": None, "activation_id": None}
+    )
+    resynced = client.get("/api/selection").json()
+    assert resynced["epoch"] == 0
+    assert client.post("/api/speak", json={"answer_id": answer_id}).status_code == 404
+    fresh = _grounded_answer_id()
+    assert _approve(fresh).status_code == 200
 
 
 def test_revoke_stops_active_speech_for_that_answer() -> None:

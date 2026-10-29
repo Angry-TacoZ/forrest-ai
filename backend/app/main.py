@@ -80,7 +80,9 @@ def post_approve(body: ApproveRequest) -> ApprovalStatus:
     status, error = mocks.approve(body.answer_id, body.approved_source_ids, body.epoch)
     if status == "unknown":
         raise HTTPException(status_code=404, detail=error)
-    if status in ("refused", "mismatched", "stale"):
+    if status == "generation-mismatch":
+        raise HTTPException(status_code=409, detail=error)
+    if status in ("refused", "mismatched"):
         raise HTTPException(status_code=422, detail=error)
     return ApprovalStatus(
         answer_id=body.answer_id, status="approved", epoch=mocks.selection_epoch()

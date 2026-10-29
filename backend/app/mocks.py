@@ -137,16 +137,24 @@ def approve(
 ) -> tuple[str, str | None]:
     """Approve a grounded answer under a selection covering its evidence.
 
-    The caller presents the generation its approval was issued against; a
-    request older than the current generation (delayed past a revocation or
-    selection change) is rejected instead of resurrecting a dead approval.
+    The caller presents the generation its approval was issued against;
+    anything but the current generation (delayed past a revocation or
+    selection change, or from the future) is rejected instead of
+    resurrecting a dead approval. Clients resynchronize through
+    GET /api/selection rather than guessing.
     """
     if answer_id not in _answer_registry:
         return "unknown", f"Unknown answer id: {answer_id}."
     if _answer_registry[answer_id] != "grounded":
         return "refused", "Only grounded answers can be approved for speech."
-    if epoch < _selection_epoch:
-        return "stale", "Approval request targets a superseded selection generation."
+    if epoch != _selection_epoch:
+        return (
+            "generation-mismatch",
+            (
+                f"Approval request generation ({epoch}) does not match "
+                f"the current selection generation ({_selection_epoch})."
+            ),
+        )
     evidence_sources = set(_answer_details[answer_id]["evidence_sources"])
     if not evidence_sources.issubset(_current_selection):
         return "mismatched", "Answer evidence is no longer within the approved selection."

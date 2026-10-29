@@ -825,6 +825,175 @@ describe('server-side approval', () => {
     await screen.findByRole('checkbox', { checked: false });
   });
 
+  it('approves and speaks after a reset without a stale-generation error', async () => {
+    // Miniature generational server: approve requires the current epoch,
+    // revoke and selection syncs bump it.
+    let serverEpoch = 0;
+    const generational = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/health') {
+        return jsonResponse({ status: 'ok', service: 'forrest-ai-backend', version: '0.1.0' });
+      }
+      if (url === '/api/sources') {
+        return jsonResponse({ sources: SOURCES });
+      }
+      if (url === '/api/transcribe') {
+        return jsonResponse({
+          question: TRANSCRIPT_QUESTION,
+          scenario: 'supported',
+          engine: 'mock-transcribe-v1',
+          duration_ms: 1800,
+        });
+      }
+      if (url === '/api/retrieve') {
+        return jsonResponse({ evidence: EVIDENCE, searched_sources: 2 });
+      }
+      if (url === '/api/answer') {
+        return jsonResponse(GROUNDED_ANSWER);
+      }
+      if (url === '/api/approve') {
+        const body = JSON.parse((init?.body as string) ?? '{}') as { epoch?: number };
+        if (body.epoch !== serverEpoch) {
+          return jsonResponse(
+            {
+              detail: `Approval request generation (${String(body.epoch)}) does not match the current selection generation (${serverEpoch}).`,
+            },
+            409,
+          );
+        }
+        return jsonResponse({
+          answer_id: 'ans-1',
+          status: 'approved',
+          revoked: false,
+          epoch: serverEpoch,
+        });
+      }
+      if (url === '/api/revoke') {
+        serverEpoch += 1;
+        return jsonResponse({
+          answer_id: 'ans-1',
+          status: 'unapproved',
+          revoked: true,
+          epoch: serverEpoch,
+        });
+      }
+      if (url === '/api/selection') {
+        if (init?.method === 'PUT') {
+          serverEpoch += 1;
+        }
+        return jsonResponse({
+          approved_source_ids: ['resume-summary', 'project-latency'],
+          epoch: serverEpoch,
+        });
+      }
+      if (url === '/api/speak') {
+        return jsonResponse({
+          status: 'speaking',
+          answer_id: 'ans-1',
+          voice: 'forrest-synthetic-v1',
+          activation_id: 'spk-live',
+        });
+      }
+      if (url === '/api/stop' || url === '/api/speech') {
+        return jsonResponse(IDLE_SPEECH);
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', generational);
+
+    await renderReadyApp();
+    fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
+    await screen.findByText(TRANSCRIPT_QUESTION);
+    fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
+    await screen.findByText(/Based on your approved materials/);
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    await screen.findByRole('checkbox', { checked: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    await screen.findByText('State: Idle');
+    fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
+    await screen.findByText(TRANSCRIPT_QUESTION);
+    fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
+    await screen.findByText(/Based on your approved materials/);
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    await screen.findByRole('checkbox', { checked: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Activate Forrest' }));
+    await screen.findByText('State: Speaking');
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('prevents a stale approval response from regressing the generation', async () => {
+    let resolveApprove!: (response: Response) => void;
+    const approveGate = new Promise<Response>((resolve) => {
+      resolveApprove = resolve;
+    });
+    let firstApproval = true;
+    const fetchMock = stubFullApi({
+      // The first approval hangs on the gate; later ones get fresh bodies
+      // (a Response body can only be read once).
+      approve: () => {
+        if (firstApproval) {
+          firstApproval = false;
+          return approveGate;
+        }
+        return Promise.resolve(
+          jsonResponse({ answer_id: 'ans-1', status: 'approved', revoked: false, epoch: 1 }),
+        );
+      },
+    });
+    await driveToDraft();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    await screen.findByText('State: Idle');
+    // Reset revoked at mock generation 1; re-drive, then let the stale
+    // approval from generation 0 arrive.
+    fireEvent.click(screen.getByRole('button', { name: 'Capture question' }));
+    await screen.findByText(TRANSCRIPT_QUESTION);
+    fireEvent.click(screen.getByRole('button', { name: 'Draft answer' }));
+    await screen.findByText(/Based on your approved materials/);
+    resolveApprove(
+      jsonResponse({ answer_id: 'ans-1', status: 'approved', revoked: false, epoch: 0 }),
+    );
+    await flushAsyncWork(approveGate);
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+    await screen.findByRole('checkbox', { checked: true });
+
+    // The fresh approval must present generation 1: the stale generation-0
+    // response must not have regressed the tracked generation.
+    const bodies = requestBodies(fetchMock, '/api/approve');
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toMatchObject({ epoch: 1 });
+  });
+
+  it('resynchronizes the selection when approval reports a generation mismatch', async () => {
+    stubFullApi({
+      approve: () =>
+        Promise.resolve(
+          jsonResponse(
+            {
+              detail:
+                'Approval request generation (2) does not match the current selection generation (0).',
+            },
+            409,
+          ),
+        ),
+      selectionGet: () =>
+        Promise.resolve(
+          jsonResponse({
+            approved_source_ids: ['resume-summary', 'project-latency'],
+            epoch: 0,
+          }),
+        ),
+    });
+    await driveToDraft();
+    fireEvent.click(screen.getByRole('checkbox', { name: /I reviewed this answer/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('resynchronized');
+    expect(screen.getByText('State: Question captured')).toBeInTheDocument();
+    expect(screen.queryByText(/Based on your approved materials/)).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /I reviewed this answer/ })).not.toBeChecked();
+  });
+
   it('leaves the box unchecked when backend approval fails', async () => {
     stubFullApi({ approve: () => Promise.reject(new Error('approval denied')) });
     await driveToDraft();
