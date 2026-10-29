@@ -1,0 +1,20 @@
+[
+  {
+    "id": "supported-full-approval",
+    "scenario": "supported",
+    "approved_source_ids": ["resume-summary", "project-latency", "cert-aws"],
+    "expect": {"status": "grounded", "min_evidence": 2}
+  },
+  {
+    "id": "supported-partial-approval",
+    "scenario": "supported",
+    "approved_source_ids": ["project-latency"],
+    "expect": {"status": "grounded", "min_evidence": 1}
+  },
+  {
+    "id": "unsupported-blocked",
+    "scenario": "unsupported",
+    "approved_source_ids": ["resume-summary", "project-latency", "cert-aws"],
+    "expect": {"status": "blocked", "min_evidence": 0}
+  }
+]

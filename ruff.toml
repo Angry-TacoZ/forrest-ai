@@ -1,0 +1,7 @@
+# Shared Ruff defaults for Python files outside backend/
+# (backend/ has its own pyproject.toml; nearest config wins).
+line-length = 100
+target-version = "py311"
+
+[lint.isort]
+known-first-party = ["app"]
