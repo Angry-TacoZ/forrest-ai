@@ -96,3 +96,6 @@ Thumbs.db
 models/
 checkpoints/
 .huggingface/
+
+# --- Eval candidates (the committed baseline stays frozen) ---
+evals/results/interview-v1-candidate.json

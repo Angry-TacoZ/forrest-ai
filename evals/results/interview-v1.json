@@ -1,0 +1,61 @@
+{
+  "suite": "interview-v1",
+  "role": "baseline",
+  "engines": {
+    "transcribe": "mock-transcribe-v1",
+    "generate": "mock-generate-v1"
+  },
+  "cases": [
+    {
+      "id": "supported-full-approval",
+      "question": "Tell me about your backend experience with checkout latency.",
+      "expected_status": "grounded",
+      "actual_status": "grounded",
+      "evidence_count": 2,
+      "evidence_sources": [
+        "resume-summary",
+        "project-latency"
+      ],
+      "claims_ok": true,
+      "unapproved_speak_status": 403,
+      "approval_status": 200,
+      "speak_status": 200,
+      "auth_ok": true,
+      "pass": true
+    },
+    {
+      "id": "supported-partial-approval",
+      "question": "Tell me about your backend experience with checkout latency.",
+      "expected_status": "grounded",
+      "actual_status": "grounded",
+      "evidence_count": 1,
+      "evidence_sources": [
+        "project-latency"
+      ],
+      "claims_ok": true,
+      "unapproved_speak_status": 403,
+      "approval_status": 200,
+      "speak_status": 200,
+      "auth_ok": true,
+      "pass": true
+    },
+    {
+      "id": "unsupported-blocked",
+      "question": "Are you able to perform pediatric neurosurgery?",
+      "expected_status": "blocked",
+      "actual_status": "blocked",
+      "evidence_count": 0,
+      "evidence_sources": [],
+      "claims_ok": true,
+      "unapproved_speak_status": 422,
+      "approval_status": 422,
+      "speak_status": 422,
+      "auth_ok": true,
+      "pass": true
+    }
+  ],
+  "summary": {
+    "passed": 3,
+    "failed": 0
+  }
+}
